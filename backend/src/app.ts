@@ -54,6 +54,9 @@ export function createApp() {
       });
     } catch (err) {
       const anyErr = err as { code?: string; name?: string; message?: string };
+      const sanitizedMessage = (anyErr?.message || '')
+        .replace(/postgres(ql)?:\/\/[^\s'"]+/gi, 'postgresql://[REDACTED]')
+        .slice(0, 400);
       res.status(503).json({
         success: false,
         status: 'unhealthy',
@@ -61,6 +64,7 @@ export function createApp() {
         databaseUrlSet: Boolean(process.env.DATABASE_URL),
         errorName: anyErr?.name || 'UnknownError',
         errorCode: anyErr?.code || null,
+        errorMessage: sanitizedMessage || null,
       });
     }
   });
