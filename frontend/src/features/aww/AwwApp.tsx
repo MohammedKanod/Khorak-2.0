@@ -134,7 +134,14 @@ export function AwwApp() {
       setOutbox(outboxItems);
 
       if (navigator.onLine) {
-        const snap = await pullCentreSnapshot(centreId);
+        // Snapshot and ledger only depend on centreId, so fetch them concurrently
+        // instead of paying two full network round trips back to back.
+        const [snap, ledgerRes] = await Promise.all([
+          pullCentreSnapshot(centreId),
+          apiRequest<{ success: boolean; data: typeof ledgerEvents }>(
+            `/api/inventory/${centreId}/ledger`
+          ).catch(() => null),
+        ]);
         if (snap) {
           setInventory(snap.inventorySummary);
           setPendingDispatches(snap.pendingDispatches);
@@ -142,10 +149,9 @@ export function AwwApp() {
           setBeneficiaries(snap.beneficiaries);
           setDistributions(snap.recentDistributions);
         }
-        const ledgerRes = await apiRequest<{ success: boolean; data: typeof ledgerEvents }>(
-          `/api/inventory/${centreId}/ledger`
-        );
-        setLedgerEvents(ledgerRes.data);
+        if (ledgerRes) {
+          setLedgerEvents(ledgerRes.data);
+        }
       } else {
         const cached = await getCachedSnapshot(centreId);
         if (cached) {

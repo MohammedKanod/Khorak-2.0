@@ -35,6 +35,9 @@ export function createApp() {
           ? true
           : allowedOrigins,
       credentials: true,
+      // Cache CORS preflight (OPTIONS) results so the browser doesn't pay an
+      // extra round trip before every JSON/Authorization request.
+      maxAge: 86400,
     })
   );
 
