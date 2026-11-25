@@ -1,0 +1,202 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #FBF9F5;
+  --bg-raised: #FFFFFF;
+  --bg-sunken: #F2EEE7;
+  --border: #E0DAD0;
+  --border-strong: #C6BEB1;
+
+  --text-primary: #17231C;
+  --text-secondary: #48584F;
+  --text-muted: #707E76;
+
+  --accent: #1B4332;
+  --accent-hover: #143426;
+  --accent-subtle: #E7F0EB;
+
+  --saffron: #D97706;
+  --saffron-hover: #B45309;
+  --saffron-subtle: #FEF3E2;
+
+  --success: #166534;
+  --success-subtle: #DCFCE7;
+  --warning: #B45309;
+  --warning-subtle: #FEF3C7;
+  --danger: #B91C1C;
+  --danger-subtle: #FEE2E2;
+
+  --font-body: 'Noto Sans Gujarati', 'DM Sans', sans-serif;
+  --font-display: 'Fraunces', 'Noto Sans Gujarati', serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+.font-display {
+  font-family: var(--font-display);
+}
+
+.font-mono-num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Native <dialog> scroll containment per modern-web-guidance */
+dialog.khorak-dialog {
+  background: var(--bg-raised);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 0;
+  max-width: min(94vw, 560px);
+  width: 100%;
+  box-shadow: 0 20px 50px rgba(23, 35, 28, 0.18);
+  margin: auto;
+}
+
+dialog.khorak-dialog:modal {
+  overscroll-behavior: contain;
+}
+
+dialog.khorak-dialog::backdrop {
+  background: rgba(23, 35, 28, 0.45);
+  backdrop-filter: blur(2px);
+  overflow: hidden;
+  overscroll-behavior: contain;
+}
+
+/* Form controls */
+.k-input,
+.k-select,
+.k-textarea {
+  width: 100%;
+  background: var(--bg-sunken);
+  border: 1.5px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: max(1rem, 15px);
+  font-family: var(--font-body);
+  color: var(--text-primary);
+  min-height: 46px;
+  transition: border-color 0.15s, box-shadow 0.15s, background-color 0.15s;
+}
+
+.k-input:focus,
+.k-select:focus,
+.k-textarea:focus {
+  outline: none;
+  background: var(--bg-raised);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-subtle);
+}
+
+.k-btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: var(--accent);
+  color: #FFFFFF;
+  border: none;
+  border-radius: 10px;
+  padding: 12px 20px;
+  min-height: 46px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.12s, transform 0.08s;
+}
+
+.k-btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.k-btn-primary:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.k-btn-primary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.k-btn-saffron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: var(--saffron);
+  color: #FFFFFF;
+  border: none;
+  border-radius: 10px;
+  padding: 12px 20px;
+  min-height: 46px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.12s, transform 0.08s;
+}
+
+.k-btn-saffron:hover:not(:disabled) {
+  background: var(--saffron-hover);
+}
+
+.k-btn-saffron:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.k-btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: var(--bg-raised);
+  color: var(--text-primary);
+  border: 1.5px solid var(--border-strong);
+  border-radius: 10px;
+  padding: 10px 16px;
+  min-height: 44px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.12s, transform 0.08s;
+}
+
+.k-btn-secondary:hover:not(:disabled) {
+  background: var(--bg-sunken);
+}
+
+.k-btn-secondary:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.k-card {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+
+@keyframes shimmer {
+  0% { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+
+.skeleton-shimmer {
+  background: linear-gradient(90deg, var(--bg-sunken) 25%, #EAE4DA 50%, var(--bg-sunken) 75%);
+  background-size: 800px 100%;
+  animation: shimmer 1.4s infinite linear;
+}
+

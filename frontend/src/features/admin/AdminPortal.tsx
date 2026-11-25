@@ -1,0 +1,1530 @@
+import React, { useEffect, useState } from 'react';
+import {
+  AlertTriangle,
+  BarChart3,
+  Building2,
+  CheckCircle2,
+  ClipboardCheck,
+  Clock,
+  Download,
+  FileWarning,
+  LayoutDashboard,
+  LogOut,
+  Package,
+  Search,
+  TrendingUp,
+  Truck,
+  UserCheck,
+} from 'lucide-react';
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
+import { useAuth } from '../../contexts/AuthContext';
+import { useI18n } from '../../locales/translations';
+import { apiRequest } from '../../lib/api';
+import {
+  AlertItem,
+  BeneficiaryReference,
+  DiscrepancyCase,
+  DispatchRecord,
+  ProductInventorySummary,
+  ReconciliationRecord,
+  SpoilageRecord,
+} from '../../types';
+import {
+  EmptyState,
+  KpiCard,
+  LoadingSkeleton,
+  ModalDialog,
+  StatusBadge,
+} from '../../components/ui';
+
+type AdminTab =
+  | 'overview'
+  | 'centres'
+  | 'inventory'
+  | 'discrepancies'
+  | 'reconciliation'
+  | 'beneficiaries'
+  | 'expiry'
+  | 'alerts'
+  | 'suppliers'
+  | 'deliveries'
+  | 'malnutrition'
+  | 'reports';
+
+interface BlockMetricsResponse {
+  kpis: {
+    totalCentres: number;
+    totalUsableStock: number;
+    centresBelowSevenDays: number;
+    stockoutCentres: number;
+    expiringBatchesCount: number;
+    pendingDeliveries: number;
+    deliveryFulfilmentPct: number;
+    distributionEfficiencyPct: number;
+    unresolvedDiscrepancies: number;
+    activeAlertsCount: number;
+  };
+  blocks: Array<{
+    blockId: string;
+    blockName: string;
+    centresCount: number;
+    usableStock: number;
+    stockoutCentres: number;
+    lowStockCentres: number;
+    distributedQty: number;
+    receivedQty: number;
+  }>;
+  centres: Array<{
+    centreId: string;
+    centreName: string;
+    centreNameGu: string | null;
+    code: string;
+    sectorName: string;
+    blockId: string;
+    blockName: string;
+    usableStock: number;
+    expiringSoonBatches: number;
+    hasStockout: boolean;
+    hasLowStock: boolean;
+    products: ProductInventorySummary[];
+  }>;
+  nutritionIndicators?: Array<{
+    id: string;
+    reportingPeriod: string;
+    indicator: 'UNDERWEIGHT_PCT' | 'WASTING_PCT' | 'SAM_PCT';
+    value: number;
+    source: string;
+    isSyntheticDemo: boolean;
+    block: { id: string; name: string };
+  }>;
+  nutritionDataNotice?: string;
+}
+
+export function AdminPortal() {
+  const { user, logout } = useAuth();
+  const { lang, setLang, t } = useI18n();
+  const role = user!.role;
+  const isDistrictLevel = role === 'DPO' || role === 'DDO';
+
+  const [tab, setTab] = useState<AdminTab>('overview');
+  const [loading, setLoading] = useState(true);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [blockFilter, setBlockFilter] = useState('ALL');
+  const [banner, setBanner] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const [metrics, setMetrics] = useState<BlockMetricsResponse | null>(null);
+  const [discrepancies, setDiscrepancies] = useState<DiscrepancyCase[]>([]);
+  const [spoilages, setSpoilages] = useState<SpoilageRecord[]>([]);
+  const [reconciliations, setReconciliations] = useState<ReconciliationRecord[]>([]);
+  const [alerts, setAlerts] = useState<AlertItem[]>([]);
+  const [dispatches, setDispatches] = useState<DispatchRecord[]>([]);
+  const [beneficiaries, setBeneficiaries] = useState<BeneficiaryReference[]>([]);
+  const [benReviewTarget, setBenReviewTarget] = useState<{
+    beneficiary: BeneficiaryReference;
+    action: 'APPROVE' | 'REJECT';
+  } | null>(null);
+  const [benReviewRemarks, setBenReviewRemarks] = useState('');
+  const [supplierPerf, setSupplierPerf] = useState<
+    Array<{
+      supplierId: string;
+      supplierName: string;
+      code: string;
+      totalDispatches: number;
+      deliveredCount: number;
+      discrepancyCount: number;
+      pendingCount: number;
+      fulfilmentRatePct: number;
+    }>
+  >([]);
+  const [distAnalytics, setDistAnalytics] = useState<{
+    dailyTrend: Array<{ day: string; totalQuantity: number; count: number }>;
+    byProduct: Array<{ productName: string; unit: string; totalQuantity: number; count: number }>;
+  } | null>(null);
+
+  // Supervisor Review Modal
+  const [reviewCase, setReviewCase] = useState<DiscrepancyCase | null>(null);
+  const [reviewAction, setReviewAction] = useState<'APPROVE' | 'REQUEST_RECOUNT' | 'REJECT' | 'RESOLVE'>('RESOLVE');
+  const [reviewRemarks, setReviewRemarks] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  // Physical Reconciliation Modal
+  const [reconOpen, setReconOpen] = useState(false);
+  const [reconCentreId, setReconCentreId] = useState('');
+  const [reconProductId, setReconProductId] = useState('');
+  const [reconBatchId, setReconBatchId] = useState('');
+  const [reconPhysicalStock, setReconPhysicalStock] = useState('');
+  const [reconRemarks, setReconRemarks] = useState('');
+
+  // Approval Remarks Modal for Spoilage/Reconciliation
+  const [approvalTarget, setApprovalTarget] = useState<{
+    id: string;
+    entityType: 'SPOILAGE' | 'RECONCILIATION';
+    decision: 'approve' | 'reject';
+    label: string;
+  } | null>(null);
+  const [approvalRemarks, setApprovalRemarks] = useState('');
+
+  async function loadDashboard() {
+    setLoading(true);
+    try {
+      const dashEndpoint = isDistrictLevel ? '/api/dashboard/district' : '/api/dashboard/block';
+      const [mRes, discRes, spoilRes, reconRes, alertRes, dispRes, supRes, distRes, benRes] =
+        await Promise.all([
+          apiRequest<{ success: boolean; data: BlockMetricsResponse }>(dashEndpoint),
+          apiRequest<{ success: boolean; data: DiscrepancyCase[] }>('/api/discrepancies'),
+          apiRequest<{ success: boolean; data: SpoilageRecord[] }>('/api/inventory/spoilage'),
+          apiRequest<{ success: boolean; data: ReconciliationRecord[] }>('/api/inventory/reconciliations'),
+          apiRequest<{ success: boolean; data: AlertItem[] }>('/api/alerts'),
+          apiRequest<{ success: boolean; data: DispatchRecord[] }>('/api/dispatches'),
+          apiRequest<{ success: boolean; data: typeof supplierPerf }>('/api/analytics/suppliers'),
+          apiRequest<{ success: boolean; data: NonNullable<typeof distAnalytics> }>('/api/analytics/distribution'),
+          apiRequest<{ success: boolean; data: BeneficiaryReference[] }>('/api/beneficiaries'),
+        ]);
+
+      setMetrics(mRes.data);
+      setDiscrepancies(discRes.data);
+      setSpoilages(spoilRes.data);
+      setReconciliations(reconRes.data);
+      setAlerts(alertRes.data);
+      setDispatches(dispRes.data);
+      setSupplierPerf(supRes.data);
+      setDistAnalytics(distRes.data);
+      setBeneficiaries(benRes.data);
+
+      if (mRes.data.centres.length > 0 && !reconCentreId) {
+        const firstC = mRes.data.centres[0];
+        setReconCentreId(firstC.centreId);
+        const firstProd = firstC.products.find((p) => p.batches.length > 0) || firstC.products[0];
+        if (firstProd) {
+          setReconProductId(firstProd.productId);
+          setReconBatchId(firstProd.batches[0]?.batchId || '');
+        }
+      }
+    } catch (err) {
+      setBanner({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Unable to load administrative dashboard',
+      });
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadDashboard();
+  }, [role]);
+
+  async function submitDiscrepancyReview(e: React.FormEvent) {
+    e.preventDefault();
+    if (!reviewCase) return;
+    setSubmitting(true);
+    try {
+      await apiRequest(`/api/discrepancies/${reviewCase.id}/review`, {
+        method: 'POST',
+        body: JSON.stringify({ action: reviewAction, remarks: reviewRemarks }),
+      });
+      setReviewCase(null);
+      setReviewRemarks('');
+      await loadDashboard();
+      setBanner({ type: 'success', text: `Discrepancy case updated (${reviewAction}).` });
+    } catch (err) {
+      setBanner({ type: 'error', text: err instanceof Error ? err.message : 'Review failed' });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function submitReconciliation(e: React.FormEvent) {
+    e.preventDefault();
+    setSubmitting(true);
+    try {
+      await apiRequest('/api/inventory/reconciliation', {
+        method: 'POST',
+        body: JSON.stringify({
+          centreId: reconCentreId,
+          productId: reconProductId,
+          batchId: reconBatchId,
+          physicalStock: Number(reconPhysicalStock),
+          remarks: reconRemarks,
+          autoApprove: role === 'SUPERVISOR' || role === 'CDPO',
+        }),
+      });
+      setReconOpen(false);
+      setReconPhysicalStock('');
+      setReconRemarks('');
+      await loadDashboard();
+      setBanner({
+        type: 'success',
+        text: 'Physical stock verification recorded with compensating ledger event.',
+      });
+    } catch (err) {
+      setBanner({ type: 'error', text: err instanceof Error ? err.message : 'Reconciliation failed' });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function submitApprovalDecision(e: React.FormEvent) {
+    e.preventDefault();
+    if (!approvalTarget) return;
+    setSubmitting(true);
+    try {
+      await apiRequest(`/api/approvals/${approvalTarget.id}/${approvalTarget.decision}`, {
+        method: 'POST',
+        body: JSON.stringify({
+          entityType: approvalTarget.entityType,
+          remarks: approvalRemarks,
+        }),
+      });
+      setApprovalTarget(null);
+      setApprovalRemarks('');
+      await loadDashboard();
+      setBanner({ type: 'success', text: `${approvalTarget.entityType} decision recorded.` });
+    } catch (err) {
+      setBanner({ type: 'error', text: err instanceof Error ? err.message : 'Approval action failed' });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function submitBeneficiaryReview(e: React.FormEvent) {
+    e.preventDefault();
+    if (!benReviewTarget) return;
+    setSubmitting(true);
+    try {
+      await apiRequest(`/api/beneficiaries/${benReviewTarget.beneficiary.id}/review`, {
+        method: 'POST',
+        body: JSON.stringify({
+          action: benReviewTarget.action,
+          remarks: benReviewRemarks,
+        }),
+      });
+      setBenReviewTarget(null);
+      setBenReviewRemarks('');
+      await loadDashboard();
+      setBanner({
+        type: 'success',
+        text: `Beneficiary ${benReviewTarget.beneficiary.displayName} ${
+          benReviewTarget.action === 'APPROVE' ? 'approved' : 'rejected'
+        }.`,
+      });
+    } catch (err) {
+      setBanner({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Beneficiary review failed',
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  function exportCsvReport() {
+    if (!metrics) return;
+    const headers = ['Centre Code', 'Centre Name', 'Sector', 'Block', 'Usable Stock', 'Expiring Soon Batches', 'Has Stockout'];
+    const rows = metrics.centres.map((c) => [
+      c.code,
+      `"${c.centreName}"`,
+      `"${c.sectorName}"`,
+      `"${c.blockName}"`,
+      c.usableStock,
+      c.expiringSoonBatches,
+      c.hasStockout ? 'YES' : 'NO',
+    ]);
+    const csv = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `khorak-panchmahal-inventory-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  const navConfig: Array<{ id: AdminTab; label: string; icon: React.ComponentType<{ className?: string }> }> =
+    role === 'SUPERVISOR'
+      ? [
+          { id: 'overview', label: t('navDashboard'), icon: LayoutDashboard },
+          { id: 'centres', label: 'Centres', icon: Building2 },
+          { id: 'inventory', label: t('navInventory'), icon: Package },
+          { id: 'beneficiaries', label: 'Beneficiary Approvals', icon: UserCheck },
+          { id: 'discrepancies', label: t('navDiscrepancies'), icon: FileWarning },
+          { id: 'reconciliation', label: t('navReconciliation'), icon: ClipboardCheck },
+          { id: 'expiry', label: t('navExpiry'), icon: Clock },
+        ]
+      : role === 'CDPO'
+        ? [
+            { id: 'overview', label: t('navDashboard'), icon: LayoutDashboard },
+            { id: 'centres', label: 'Centres', icon: Building2 },
+            { id: 'beneficiaries', label: 'Beneficiaries', icon: UserCheck },
+            { id: 'alerts', label: t('navAlerts'), icon: AlertTriangle },
+            { id: 'suppliers', label: 'Suppliers', icon: Truck },
+            { id: 'deliveries', label: 'Deliveries', icon: Package },
+            { id: 'discrepancies', label: t('navDiscrepancies'), icon: FileWarning },
+            { id: 'reports', label: t('navReports'), icon: Download },
+          ]
+        : role === 'TDO'
+          ? [
+              { id: 'overview', label: t('navDashboard'), icon: LayoutDashboard },
+              { id: 'centres', label: 'Block Inventory', icon: Building2 },
+              { id: 'reports', label: 'Distribution Performance', icon: BarChart3 },
+            ]
+          : role === 'DPO'
+            ? [
+                { id: 'overview', label: t('navDashboard'), icon: LayoutDashboard },
+                { id: 'centres', label: 'Block Comparison', icon: Building2 },
+                { id: 'inventory', label: t('navInventory'), icon: Package },
+                { id: 'alerts', label: 'Stockout Reports', icon: AlertTriangle },
+                { id: 'expiry', label: 'Expiry Reports', icon: Clock },
+                { id: 'reports', label: t('navReports'), icon: Download },
+              ]
+            : [
+                // DDO Executive
+                { id: 'overview', label: 'District Overview', icon: LayoutDashboard },
+                { id: 'centres', label: 'Block Performance', icon: Building2 },
+                { id: 'inventory', label: 'Inventory Trends', icon: Package },
+                { id: 'malnutrition', label: 'Malnutrition Trends', icon: TrendingUp },
+                { id: 'discrepancies', label: t('navDiscrepancies'), icon: FileWarning },
+                { id: 'reports', label: t('navReports'), icon: Download },
+              ];
+
+  const filteredCentres = (metrics?.centres || []).filter((c) => {
+    const matchesBlock = blockFilter === 'ALL' || c.blockId === blockFilter;
+    const q = searchQuery.trim().toLowerCase();
+    const matchesQ =
+      !q ||
+      c.centreName.toLowerCase().includes(q) ||
+      c.code.toLowerCase().includes(q) ||
+      c.sectorName.toLowerCase().includes(q);
+    return matchesBlock && matchesQ;
+  });
+
+  const allBatches = (metrics?.centres || []).flatMap((c) =>
+    c.products.flatMap((p) =>
+      p.batches.map((b) => ({
+        ...b,
+        centreName: c.centreName,
+        centreCode: c.code,
+        blockName: c.blockName,
+      }))
+    )
+  );
+
+  const reconCentre = metrics?.centres.find((c) => c.centreId === reconCentreId);
+  const reconProduct = reconCentre?.products.find((p) => p.productId === reconProductId);
+  const reconBatch = reconProduct?.batches.find((b) => b.batchId === reconBatchId);
+
+  // Transform NutritionAggregate into Recharts trend dataset
+  const malnutritionByPeriod = (() => {
+    const rows = metrics?.nutritionIndicators || [];
+    const map = new Map<string, { period: string; underweight: number; wasting: number; sam: number; count: number }>();
+    for (const r of rows) {
+      const entry = map.get(r.reportingPeriod) || {
+        period: r.reportingPeriod,
+        underweight: 0,
+        wasting: 0,
+        sam: 0,
+        count: 0,
+      };
+      if (r.indicator === 'UNDERWEIGHT_PCT') {
+        entry.underweight += r.value;
+        entry.count++;
+      } else if (r.indicator === 'WASTING_PCT') {
+        entry.wasting += r.value;
+      } else if (r.indicator === 'SAM_PCT') {
+        entry.sam += r.value;
+      }
+      map.set(r.reportingPeriod, entry);
+    }
+    return Array.from(map.values()).map((d) => ({
+      period: d.period,
+      underweightPct: d.count ? Number((d.underweight / d.count).toFixed(1)) : 0,
+      wastingPct: d.count ? Number((d.wasting / d.count).toFixed(1)) : 0,
+      samPct: d.count ? Number((d.sam / d.count).toFixed(1)) : 0,
+    }));
+  })();
+
+  return (
+    <div className="min-h-screen bg-[var(--bg)] md:flex">
+      {/* Sidebar */}
+      <aside className="border-b border-[var(--border)] bg-[var(--accent)] text-white md:flex md:w-64 md:shrink-0 md:flex-col md:border-b-0 md:border-r">
+        <div className="flex items-center justify-between px-5 py-4">
+          <div>
+            <div className="font-display text-lg font-bold">{t('appTitle')}</div>
+            <p className="text-xs text-emerald-100">
+              {role} • {user?.block?.name || user?.sector?.name || user?.district?.name || 'Panchmahal'}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setLang(lang === 'gu' ? 'en' : 'gu')}
+            className="rounded-md bg-white/15 px-2.5 py-1 text-xs font-bold"
+          >
+            {lang === 'gu' ? 'EN' : 'ગુજ'}
+          </button>
+        </div>
+
+        <nav className="flex gap-1 overflow-x-auto px-3 pb-3 md:flex-1 md:flex-col md:py-2">
+          {navConfig.map((item) => {
+            const Icon = item.icon;
+            const active = tab === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setTab(item.id)}
+                className={`flex shrink-0 items-center gap-2.5 rounded-xl px-3.5 py-2.5 text-sm font-semibold transition ${
+                  active ? 'bg-white text-[var(--accent)]' : 'text-emerald-100 hover:bg-white/10'
+                }`}
+              >
+                <Icon className="h-4 w-4" />
+                <span>{item.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+
+        <div className="hidden border-t border-white/15 p-4 md:block">
+          <p className="mb-2 truncate text-xs text-emerald-100">{user?.name}</p>
+          <button
+            type="button"
+            onClick={logout}
+            className="flex w-full items-center gap-2 rounded-xl bg-white/10 px-3 py-2 text-sm font-semibold text-white hover:bg-white/20"
+          >
+            <LogOut className="h-4 w-4" />
+            {t('signOut')}
+          </button>
+        </div>
+      </aside>
+
+      {/* Main */}
+      <main className="flex-1 p-4 md:p-8">
+        <div className="mx-auto max-w-6xl space-y-6">
+          <header className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <span className="rounded-full bg-[var(--saffron-subtle)] px-2.5 py-0.5 text-xs font-bold text-[var(--warning)]">
+                {t('syntheticBanner')}
+              </span>
+              <h1 className="mt-1 text-2xl font-bold text-[var(--text-primary)]">
+                {navConfig.find((n) => n.id === tab)?.label}
+              </h1>
+            </div>
+            <div className="flex items-center gap-2">
+              {role === 'SUPERVISOR' && (
+                <button type="button" onClick={() => setReconOpen(true)} className="k-btn-primary">
+                  <ClipboardCheck className="h-4 w-4" />
+                  Physical Verification
+                </button>
+              )}
+              <button type="button" onClick={exportCsvReport} className="k-btn-secondary">
+                <Download className="h-4 w-4" />
+                Export CSV
+              </button>
+              <button type="button" onClick={logout} className="k-btn-secondary md:hidden">
+                <LogOut className="h-4 w-4" />
+              </button>
+            </div>
+          </header>
+
+          {banner && (
+            <div
+              role="status"
+              className={`rounded-xl border px-4 py-3 text-sm font-medium ${
+                banner.type === 'success'
+                  ? 'border-emerald-200 bg-[var(--success-subtle)] text-[var(--success)]'
+                  : 'border-red-200 bg-[var(--danger-subtle)] text-[var(--danger)]'
+              }`}
+            >
+              {banner.text}
+            </div>
+          )}
+
+          {loading || !metrics ? (
+            <LoadingSkeleton rows={5} />
+          ) : (
+            <>
+              {/* OVERVIEW */}
+              {tab === 'overview' && (
+                <div className="space-y-6">
+                  <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
+                    <KpiCard label="Registered Centres" value={metrics.kpis.totalCentres} tone="green" />
+                    <KpiCard label="Total Usable Stock" value={metrics.kpis.totalUsableStock} />
+                    <KpiCard
+                      label="Below 7 Days Stock"
+                      value={metrics.kpis.centresBelowSevenDays}
+                      tone="saffron"
+                    />
+                    <KpiCard
+                      label="Stockout Centres"
+                      value={metrics.kpis.stockoutCentres}
+                      tone="danger"
+                    />
+                    <KpiCard
+                      label="Unresolved Discrepancies"
+                      value={metrics.kpis.unresolvedDiscrepancies}
+                      tone={metrics.kpis.unresolvedDiscrepancies > 0 ? 'danger' : 'default'}
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+                    <KpiCard label="Expiring Soon Batches" value={metrics.kpis.expiringBatchesCount} />
+                    <KpiCard label="Pending Deliveries" value={metrics.kpis.pendingDeliveries} />
+                    <KpiCard
+                      label="Delivery Fulfilment"
+                      value={`${metrics.kpis.deliveryFulfilmentPct}%`}
+                      tone="green"
+                    />
+                    <KpiCard
+                      label="Distribution Efficiency"
+                      value={`${metrics.kpis.distributionEfficiencyPct}%`}
+                    />
+                  </div>
+
+                  {/* Block Comparison Chart */}
+                  <div className="grid gap-6 lg:grid-cols-2">
+                    <div className="k-card p-5">
+                      <h2 className="mb-3 text-base font-bold">Block-wise Usable Stock & Distribution</h2>
+                      <div className="h-72">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={metrics.blocks}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#E0DAD0" />
+                            <XAxis dataKey="blockName" tick={{ fontSize: 12 }} />
+                            <YAxis tick={{ fontSize: 12 }} />
+                            <Tooltip />
+                            <Legend />
+                            <Bar dataKey="usableStock" name="Usable Stock" fill="#1B4332" radius={[6, 6, 0, 0]} />
+                            <Bar dataKey="distributedQty" name="Distributed/Used" fill="#D97706" radius={[6, 6, 0, 0]} />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+
+                    <div className="k-card p-5">
+                      <h2 className="mb-3 text-base font-bold">Daily Nutrition Distribution Trend</h2>
+                      {distAnalytics && distAnalytics.dailyTrend.length > 0 ? (
+                        <div className="h-72">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <LineChart data={distAnalytics.dailyTrend}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#E0DAD0" />
+                              <XAxis dataKey="day" tick={{ fontSize: 11 }} />
+                              <YAxis tick={{ fontSize: 12 }} />
+                              <Tooltip />
+                              <Line
+                                type="monotone"
+                                dataKey="totalQuantity"
+                                name="Units Distributed"
+                                stroke="#1B4332"
+                                strokeWidth={2.5}
+                                dot={{ r: 4 }}
+                              />
+                            </LineChart>
+                          </ResponsiveContainer>
+                        </div>
+                      ) : (
+                        <EmptyState
+                          title="No distribution trend yet"
+                          description="Daily distribution quantities appear here as centres record handovers."
+                        />
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* CENTRES / BLOCK COMPARISON */}
+              {tab === 'centres' && (
+                <div className="space-y-4">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <div className="relative flex-1 min-w-[220px]">
+                      <Search className="absolute left-3 top-3.5 h-4 w-4 text-[var(--text-muted)]" />
+                      <input
+                        type="search"
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        placeholder="Search centre name, code, or sector..."
+                        className="k-input pl-9"
+                      />
+                    </div>
+                    <select
+                      value={blockFilter}
+                      onChange={(e) => setBlockFilter(e.target.value)}
+                      className="k-select w-48"
+                    >
+                      <option value="ALL">All Blocks</option>
+                      {metrics.blocks.map((b) => (
+                        <option key={b.blockId} value={b.blockId}>
+                          {b.blockName}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="k-card overflow-x-auto p-4">
+                    <table className="w-full text-left text-sm">
+                      <thead>
+                        <tr className="border-b border-[var(--border)] text-xs text-[var(--text-muted)]">
+                          <th className="py-2 pr-3">Code</th>
+                          <th className="py-2 pr-3">Anganwadi Centre</th>
+                          <th className="py-2 pr-3">Block / Sector</th>
+                          <th className="py-2 pr-3">Usable Stock</th>
+                          <th className="py-2 pr-3">Expiring Soon</th>
+                          <th className="py-2 pr-3">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredCentres.map((c) => (
+                          <tr key={c.centreId} className="border-b border-[var(--border)]">
+                            <td className="font-mono-num py-3 pr-3 font-semibold">{c.code}</td>
+                            <td className="py-3 pr-3 font-medium">
+                              {lang === 'gu' ? c.centreNameGu || c.centreName : c.centreName}
+                            </td>
+                            <td className="py-3 pr-3 text-xs text-[var(--text-secondary)]">
+                              {c.blockName} • {c.sectorName}
+                            </td>
+                            <td className="font-mono-num py-3 pr-3 font-bold">{c.usableStock}</td>
+                            <td className="font-mono-num py-3 pr-3">{c.expiringSoonBatches}</td>
+                            <td className="py-3 pr-3">
+                              {c.hasStockout ? (
+                                <StatusBadge variant="critical">Stockout Alert</StatusBadge>
+                              ) : c.hasLowStock ? (
+                                <StatusBadge variant="warning">Reorder Warning</StatusBadge>
+                              ) : (
+                                <StatusBadge variant="normal">Healthy</StatusBadge>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* INVENTORY */}
+              {tab === 'inventory' && (
+                <div className="space-y-4">
+                  {metrics.centres.map((c) => (
+                    <div key={c.centreId} className="k-card p-5">
+                      <div className="mb-3 flex items-center justify-between">
+                        <div>
+                          <h2 className="font-bold">
+                            {c.centreName} ({c.code})
+                          </h2>
+                          <p className="text-xs text-[var(--text-secondary)]">
+                            {c.blockName} • {c.sectorName}
+                          </p>
+                        </div>
+                        <span className="font-mono-num text-sm font-bold text-[var(--accent)]">
+                          Total Usable: {c.usableStock}
+                        </span>
+                      </div>
+                      <div className="grid gap-2 md:grid-cols-3">
+                        {c.products.map((p) => (
+                          <div
+                            key={p.productId}
+                            className="rounded-xl border border-[var(--border)] bg-[var(--bg-sunken)]/50 p-3 text-xs"
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="font-bold">{p.productName}</span>
+                              <StatusBadge
+                                variant={
+                                  p.reorderLevel === 'STOCKOUT' || p.reorderLevel === 'CRITICAL'
+                                    ? 'critical'
+                                    : p.reorderLevel === 'WARNING'
+                                      ? 'warning'
+                                      : 'normal'
+                                }
+                              >
+                                {p.reorderLevel}
+                              </StatusBadge>
+                            </div>
+                            <p className="font-mono-num mt-1 text-base font-bold">
+                              {p.usableStock} {p.unit}
+                            </p>
+                            <p className="text-[11px] text-[var(--text-muted)]">
+                              {p.daysOfStock ?? 0} days • {p.averageDailyConsumption}/day{' '}
+                              {p.isConsumptionEstimated && '(Est.)'}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* DISCREPANCIES */}
+              {tab === 'discrepancies' && (
+                <div className="k-card p-5">
+                  <h2 className="mb-4 text-base font-bold">
+                    Delivery Discrepancy Queue ({discrepancies.length})
+                  </h2>
+                  {discrepancies.length === 0 ? (
+                    <EmptyState
+                      title="No discrepancy cases"
+                      description="All supplier dispatches matched AWW physical receipt counts."
+                    />
+                  ) : (
+                    <div className="space-y-3">
+                      {discrepancies.map((c) => (
+                        <div
+                          key={c.id}
+                          className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--border)] p-4 text-sm"
+                        >
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="font-mono-num font-bold">
+                                {c.dispatch?.dispatchReference}
+                              </span>
+                              <StatusBadge
+                                variant={
+                                  c.status === 'RESOLVED' || c.status === 'APPROVED'
+                                    ? 'normal'
+                                    : 'critical'
+                                }
+                              >
+                                {c.status}
+                              </StatusBadge>
+                            </div>
+                            <p className="mt-1 text-xs text-[var(--text-secondary)]">
+                              {c.dispatch?.destinationCentre?.name} • Supplier: {c.dispatch?.supplier?.name}
+                            </p>
+                            <p className="font-mono-num mt-1 text-xs">
+                              Expected: {c.expectedQuantity} | Accepted: {c.actualQuantity} | Damaged:{' '}
+                              {c.damagedQuantity} | Missing: {c.missingQuantity} (Diff: {c.difference})
+                            </p>
+                            {c.resolutionRemarks && (
+                              <p className="mt-1 text-xs italic text-[var(--accent)]">
+                                Remarks: {c.resolutionRemarks}
+                              </p>
+                            )}
+                          </div>
+                          {(role === 'SUPERVISOR' || role === 'CDPO' || role === 'DPO' || role === 'DDO') && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setReviewCase(c);
+                                setReviewAction('RESOLVE');
+                                setReviewRemarks(c.resolutionRemarks || '');
+                              }}
+                              className="k-btn-primary min-h-[38px] px-3 py-1.5 text-xs"
+                            >
+                              Review / Resolve
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* RECONCILIATION & APPROVALS */}
+              {tab === 'reconciliation' && (
+                <div className="space-y-6">
+                  <div className="k-card p-5">
+                    <div className="mb-3 flex items-center justify-between">
+                      <h2 className="text-base font-bold">Physical Stock Reconciliations</h2>
+                      <button type="button" onClick={() => setReconOpen(true)} className="k-btn-primary min-h-[38px] text-xs">
+                        Record Physical Count
+                      </button>
+                    </div>
+                    <div className="space-y-2.5">
+                      {reconciliations.map((r) => (
+                        <div
+                          key={r.id}
+                          className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--border)] p-3 text-sm"
+                        >
+                          <div>
+                            <p className="font-bold">
+                              {r.centre?.name} • {r.product?.name} (Batch {r.batch?.batchNumber})
+                            </p>
+                            <p className="font-mono-num text-xs text-[var(--text-secondary)]">
+                              Ledger: {r.calculatedStock} | Physical: {r.physicalStock} | Variance:{' '}
+                              {r.variance}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <StatusBadge
+                              variant={
+                                r.status === 'APPROVED'
+                                  ? 'normal'
+                                  : r.status === 'REJECTED'
+                                    ? 'critical'
+                                    : 'warning'
+                              }
+                            >
+                              {r.status}
+                            </StatusBadge>
+                            {r.status === 'PENDING_APPROVAL' && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setApprovalTarget({
+                                      id: r.id,
+                                      entityType: 'RECONCILIATION',
+                                      decision: 'approve',
+                                      label: `Approve reconciliation variance (${r.variance})`,
+                                    })
+                                  }
+                                  className="k-btn-primary min-h-[34px] px-3 py-1 text-xs"
+                                >
+                                  Approve
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setApprovalTarget({
+                                      id: r.id,
+                                      entityType: 'RECONCILIATION',
+                                      decision: 'reject',
+                                      label: 'Reject reconciliation',
+                                    })
+                                  }
+                                  className="k-btn-secondary min-h-[34px] px-3 py-1 text-xs"
+                                >
+                                  Reject
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="k-card p-5">
+                    <h2 className="mb-3 text-base font-bold">Spoilage Reports Queue</h2>
+                    {spoilages.length === 0 ? (
+                      <EmptyState title="No spoilage reports" description="No damaged or spoiled stock reports submitted." />
+                    ) : (
+                      <div className="space-y-2.5">
+                        {spoilages.map((s) => (
+                          <div
+                            key={s.id}
+                            className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--border)] p-3 text-sm"
+                          >
+                            <div>
+                              <p className="font-bold">
+                                {s.centre?.name} • {s.product?.name} ({s.quantity} {s.product?.unit})
+                              </p>
+                              <p className="text-xs text-[var(--text-secondary)]">
+                                Batch {s.batch?.batchNumber} • Reason: {s.reason}
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <StatusBadge
+                                variant={
+                                  s.status === 'APPROVED'
+                                    ? 'normal'
+                                    : s.status === 'REJECTED'
+                                      ? 'critical'
+                                      : 'warning'
+                                }
+                              >
+                                {s.status}
+                              </StatusBadge>
+                              {s.status === 'PENDING' && (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setApprovalTarget({
+                                        id: s.id,
+                                        entityType: 'SPOILAGE',
+                                        decision: 'approve',
+                                        label: `Approve spoilage deduction (${s.quantity} ${s.product?.unit})`,
+                                      })
+                                    }
+                                    className="k-btn-primary min-h-[34px] px-3 py-1 text-xs"
+                                  >
+                                    Approve
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setApprovalTarget({
+                                        id: s.id,
+                                        entityType: 'SPOILAGE',
+                                        decision: 'reject',
+                                        label: 'Reject spoilage report',
+                                      })
+                                    }
+                                    className="k-btn-secondary min-h-[34px] px-3 py-1 text-xs"
+                                  >
+                                    Reject
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* BENEFICIARY APPROVALS (MUKHYA SEVIKA / CDPO) */}
+              {tab === 'beneficiaries' && (
+                <div className="k-card p-5">
+                  <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h2 className="text-base font-bold">
+                        Beneficiary Reference Approvals ({beneficiaries.length})
+                      </h2>
+                      <p className="text-xs text-[var(--text-secondary)]">
+                        Review beneficiaries added by Anganwadi Workers before allowing ration handover.
+                      </p>
+                    </div>
+                    <StatusBadge
+                      variant={
+                        beneficiaries.some((b) => b.status === 'PENDING_APPROVAL')
+                          ? 'warning'
+                          : 'normal'
+                      }
+                    >
+                      {beneficiaries.filter((b) => b.status === 'PENDING_APPROVAL').length} Pending
+                    </StatusBadge>
+                  </div>
+
+                  {beneficiaries.length === 0 ? (
+                    <EmptyState
+                      title="No beneficiary references in scope"
+                      description="Beneficiary requests submitted by AWWs in your sector appear here."
+                    />
+                  ) : (
+                    <div className="space-y-3">
+                      {beneficiaries.map((b) => (
+                        <div
+                          key={b.id}
+                          className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--border)] p-4 text-sm"
+                        >
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="font-bold">
+                                {lang === 'gu' ? b.displayNameGu || b.displayName : b.displayName}
+                              </span>
+                              <StatusBadge
+                                variant={
+                                  b.status === 'APPROVED'
+                                    ? 'normal'
+                                    : b.status === 'REJECTED'
+                                      ? 'critical'
+                                      : 'warning'
+                                }
+                              >
+                                {b.status || 'APPROVED'}
+                              </StatusBadge>
+                            </div>
+                            <p className="font-mono-num mt-1 text-xs text-[var(--text-secondary)]">
+                              {b.centre?.name} ({b.centre?.code}) • {b.localReference} • Masked: ****
+                              {b.maskedIdLast4} • YOB {b.yob || '—'} • {b.beneficiaryCategory}
+                            </p>
+                            {b.requester && (
+                              <p className="mt-0.5 text-xs text-[var(--text-muted)]">
+                                Requested by: {b.requester.name} ({b.requester.role})
+                              </p>
+                            )}
+                            {b.reviewRemarks && (
+                              <p className="mt-0.5 text-xs italic text-[var(--accent)]">
+                                Sevika Remarks: {b.reviewRemarks}
+                              </p>
+                            )}
+                          </div>
+
+                          {b.status === 'PENDING_APPROVAL' && (
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setBenReviewTarget({ beneficiary: b, action: 'APPROVE' });
+                                  setBenReviewRemarks('Verified against AWC register and POSHAN reference');
+                                }}
+                                className="k-btn-primary min-h-[36px] px-3 py-1.5 text-xs"
+                              >
+                                Approve
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setBenReviewTarget({ beneficiary: b, action: 'REJECT' });
+                                  setBenReviewRemarks('');
+                                }}
+                                className="k-btn-secondary min-h-[36px] px-3 py-1.5 text-xs text-[var(--danger)]"
+                              >
+                                Reject
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* EXPIRY MONITORING */}
+              {tab === 'expiry' && (
+                <div className="k-card overflow-x-auto p-5">
+                  <h2 className="mb-3 text-base font-bold">FEFO Batch & Expiry Monitoring</h2>
+                  <table className="w-full text-left text-sm">
+                    <thead>
+                      <tr className="border-b border-[var(--border)] text-xs text-[var(--text-muted)]">
+                        <th className="py-2 pr-3">Centre</th>
+                        <th className="py-2 pr-3">Product</th>
+                        <th className="py-2 pr-3">Batch</th>
+                        <th className="py-2 pr-3">Balance</th>
+                        <th className="py-2 pr-3">Expiry Date</th>
+                        <th className="py-2 pr-3">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {allBatches
+                        .sort((a, b) => a.daysToExpiry - b.daysToExpiry)
+                        .map((b, i) => (
+                          <tr key={`${b.batchId}-${b.centreCode}-${i}`} className="border-b border-[var(--border)]">
+                            <td className="py-2.5 pr-3 text-xs font-medium">{b.centreName}</td>
+                            <td className="py-2.5 pr-3">{b.productName}</td>
+                            <td className="font-mono-num py-2.5 pr-3 text-xs">{b.batchNumber}</td>
+                            <td className="font-mono-num py-2.5 pr-3 font-bold">
+                              {b.balance} {b.unit}
+                            </td>
+                            <td className="font-mono-num py-2.5 pr-3 text-xs">
+                              {new Date(b.expiryDate).toLocaleDateString()} ({b.daysToExpiry}d)
+                            </td>
+                            <td className="py-2.5 pr-3">
+                              {b.isExpired ? (
+                                <StatusBadge variant="critical">Expired (Blocked)</StatusBadge>
+                              ) : b.isExpiringSoon ? (
+                                <StatusBadge variant="warning">Expiring Soon</StatusBadge>
+                              ) : (
+                                <StatusBadge variant="normal">Usable</StatusBadge>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* ALERTS / STOCKOUTS */}
+              {tab === 'alerts' && (
+                <div className="k-card p-5">
+                  <h2 className="mb-3 text-base font-bold">Active Reorder & Stockout Alerts ({alerts.length})</h2>
+                  {alerts.length === 0 ? (
+                    <EmptyState title="No active alerts" description="All monitored centres are above alert thresholds." />
+                  ) : (
+                    <div className="space-y-2.5">
+                      {alerts.map((a) => (
+                        <div
+                          key={a.id}
+                          className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--border)] p-3 text-sm"
+                        >
+                          <div>
+                            <p className="font-bold">
+                              {a.centre?.name} ({a.centre?.code})
+                            </p>
+                            <p className="text-xs text-[var(--text-secondary)]">
+                              {lang === 'gu' ? a.messageGu : a.message}
+                            </p>
+                          </div>
+                          <StatusBadge
+                            variant={
+                              a.severity === 'CRITICAL'
+                                ? 'critical'
+                                : a.severity === 'WARNING'
+                                  ? 'warning'
+                                  : 'info'
+                            }
+                          >
+                            {a.alertType}
+                          </StatusBadge>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* SUPPLIERS */}
+              {tab === 'suppliers' && (
+                <div className="k-card p-5">
+                  <h2 className="mb-3 text-base font-bold">Supplier Performance & Fulfilment</h2>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm">
+                      <thead>
+                        <tr className="border-b border-[var(--border)] text-xs text-[var(--text-muted)]">
+                          <th className="py-2 pr-3">Supplier</th>
+                          <th className="py-2 pr-3">Dispatches</th>
+                          <th className="py-2 pr-3">Delivered</th>
+                          <th className="py-2 pr-3">Discrepancies</th>
+                          <th className="py-2 pr-3">Fulfilment Rate</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {supplierPerf.map((s) => (
+                          <tr key={s.supplierId} className="border-b border-[var(--border)]">
+                            <td className="py-3 pr-3 font-semibold">{s.supplierName}</td>
+                            <td className="font-mono-num py-3 pr-3">{s.totalDispatches}</td>
+                            <td className="font-mono-num py-3 pr-3">{s.deliveredCount}</td>
+                            <td className="font-mono-num py-3 pr-3 text-[var(--danger)]">
+                              {s.discrepancyCount}
+                            </td>
+                            <td className="font-mono-num py-3 pr-3 font-bold text-[var(--accent)]">
+                              {s.fulfilmentRatePct}%
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* DELIVERIES */}
+              {tab === 'deliveries' && (
+                <div className="k-card p-5">
+                  <h2 className="mb-3 text-base font-bold">Scheduled & Completed Deliveries</h2>
+                  <div className="space-y-2.5">
+                    {dispatches.map((d) => (
+                      <div
+                        key={d.id}
+                        className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--border)] p-3 text-sm"
+                      >
+                        <div>
+                          <p className="font-mono-num font-bold">
+                            {d.dispatchReference} → {d.destinationCentre.name}
+                          </p>
+                          <p className="text-xs text-[var(--text-secondary)]">
+                            Supplier: {d.supplier.name} • Dispatched:{' '}
+                            {new Date(d.dispatchDate).toLocaleDateString()}
+                          </p>
+                        </div>
+                        <StatusBadge
+                          variant={
+                            d.status === 'DELIVERED'
+                              ? 'normal'
+                              : d.status === 'DISCREPANCY'
+                                ? 'critical'
+                                : 'warning'
+                          }
+                        >
+                          {d.status}
+                        </StatusBadge>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* MALNUTRITION TRENDS (DDO) */}
+              {tab === 'malnutrition' && (
+                <div className="space-y-4">
+                  <div className="rounded-xl border border-amber-300 bg-[var(--saffron-subtle)] px-4 py-3 text-xs font-semibold text-[var(--warning)]">
+                    {metrics.nutritionDataNotice ||
+                      'Synthetic demonstration aggregate data — complements POSHAN Tracker without duplicating child growth monitoring.'}
+                  </div>
+                  <div className="k-card p-5">
+                    <h2 className="mb-3 text-base font-bold">
+                      Panchmahal Aggregated Malnutrition Prevalence Trends (%)
+                    </h2>
+                    <div className="h-80">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <LineChart data={malnutritionByPeriod}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#E0DAD0" />
+                          <XAxis dataKey="period" />
+                          <YAxis unit="%" />
+                          <Tooltip />
+                          <Legend />
+                          <Line type="monotone" dataKey="underweightPct" name="Underweight %" stroke="#1B4332" strokeWidth={2.5} />
+                          <Line type="monotone" dataKey="wastingPct" name="Wasting %" stroke="#D97706" strokeWidth={2.5} />
+                          <Line type="monotone" dataKey="samPct" name="Severe Acute Malnutrition (SAM) %" stroke="#B91C1C" strokeWidth={2.5} />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* REPORTS */}
+              {tab === 'reports' && (
+                <div className="k-card space-y-4 p-6">
+                  <h2 className="text-base font-bold">Supply Chain Accountability Reports</h2>
+                  <p className="text-sm text-[var(--text-secondary)]">
+                    Download verified centre-level usable stock, stockout alerts, and expiring batch
+                    reports for administrative review.
+                  </p>
+                  <button type="button" onClick={exportCsvReport} className="k-btn-primary">
+                    <Download className="h-4 w-4" />
+                    Download Inventory & Stockout CSV
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </main>
+
+      {/* Supervisor Discrepancy Review Modal */}
+      <ModalDialog
+        open={Boolean(reviewCase)}
+        onClose={() => setReviewCase(null)}
+        title="Review Delivery Discrepancy"
+        subtitle={reviewCase?.dispatch?.dispatchReference}
+      >
+        {reviewCase && (
+          <form onSubmit={submitDiscrepancyReview} className="space-y-4">
+            <div className="rounded-xl bg-[var(--bg-sunken)] p-3 text-xs space-y-1">
+              <p>
+                <strong>Expected:</strong> {reviewCase.expectedQuantity} |{' '}
+                <strong>Accepted:</strong> {reviewCase.actualQuantity}
+              </p>
+              <p>
+                <strong>Damaged:</strong> {reviewCase.damagedQuantity} |{' '}
+                <strong>Missing:</strong> {reviewCase.missingQuantity}
+              </p>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-semibold">Administrative Decision</label>
+              <select
+                value={reviewAction}
+                onChange={(e) => setReviewAction(e.target.value as typeof reviewAction)}
+                className="k-select"
+              >
+                <option value="APPROVE">Approve Discrepancy Report</option>
+                <option value="REQUEST_RECOUNT">Request Physical Recount</option>
+                <option value="REJECT">Reject Claim</option>
+                <option value="RESOLVE">Mark Resolved</option>
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-semibold">
+                Mandatory Resolution Remarks
+              </label>
+              <textarea
+                rows={3}
+                value={reviewRemarks}
+                onChange={(e) => setReviewRemarks(e.target.value)}
+                placeholder="Enter official supervisor verification remarks..."
+                className="k-textarea"
+                required
+                minLength={3}
+              />
+            </div>
+            <div className="flex gap-2">
+              <button type="button" onClick={() => setReviewCase(null)} className="k-btn-secondary flex-1">
+                {t('cancel')}
+              </button>
+              <button type="submit" disabled={submitting} className="k-btn-primary flex-1">
+                {submitting ? t('loading') : 'Save Decision'}
+              </button>
+            </div>
+          </form>
+        )}
+      </ModalDialog>
+
+      {/* Physical Stock Reconciliation Modal */}
+      <ModalDialog
+        open={reconOpen}
+        onClose={() => setReconOpen(false)}
+        title="Physical Stock Verification"
+        subtitle="Creates a compensating adjustment event without overwriting historical ledger entries"
+      >
+        <form onSubmit={submitReconciliation} className="space-y-4">
+          <div>
+            <label className="mb-1 block text-xs font-semibold">Anganwadi Centre</label>
+            <select
+              value={reconCentreId}
+              onChange={(e) => {
+                const cid = e.target.value;
+                setReconCentreId(cid);
+                const c = metrics?.centres.find((x) => x.centreId === cid);
+                const p = c?.products.find((pr) => pr.batches.length > 0) || c?.products[0];
+                setReconProductId(p?.productId || '');
+                setReconBatchId(p?.batches[0]?.batchId || '');
+              }}
+              className="k-select"
+            >
+              {metrics?.centres.map((c) => (
+                <option key={c.centreId} value={c.centreId}>
+                  {c.centreName} ({c.code})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="mb-1 block text-xs font-semibold">Product</label>
+            <select
+              value={reconProductId}
+              onChange={(e) => {
+                const pid = e.target.value;
+                setReconProductId(pid);
+                const p = reconCentre?.products.find((pr) => pr.productId === pid);
+                setReconBatchId(p?.batches[0]?.batchId || '');
+              }}
+              className="k-select"
+            >
+              {reconCentre?.products
+                .filter((p) => p.batches.length > 0)
+                .map((p) => (
+                  <option key={p.productId} value={p.productId}>
+                    {p.productName}
+                  </option>
+                ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="mb-1 block text-xs font-semibold">Batch</label>
+            <select
+              value={reconBatchId}
+              onChange={(e) => setReconBatchId(e.target.value)}
+              className="k-select"
+              required
+            >
+              {reconProduct?.batches.map((b) => (
+                <option key={b.batchId} value={b.batchId}>
+                  {b.batchNumber} (Ledger Balance: {b.balance} {reconProduct.unit})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {reconBatch && (
+            <div className="rounded-xl bg-[var(--bg-sunken)] p-3 text-xs">
+              Calculated Ledger Balance:{' '}
+              <strong className="font-mono-num">
+                {reconBatch.balance} {reconProduct?.unit}
+              </strong>
+              {reconPhysicalStock !== '' && (
+                <span className="ml-3">
+                  Variance:{' '}
+                  <strong className="font-mono-num">
+                    {(Number(reconPhysicalStock) - reconBatch.balance).toFixed(2)}
+                  </strong>
+                </span>
+              )}
+            </div>
+          )}
+
+          <div>
+            <label className="mb-1 block text-xs font-semibold">Actual Physical Count</label>
+            <input
+              type="number"
+              step="0.1"
+              min="0"
+              value={reconPhysicalStock}
+              onChange={(e) => setReconPhysicalStock(e.target.value)}
+              className="k-input"
+              required
+            />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-xs font-semibold">Verification Remarks</label>
+            <textarea
+              rows={2}
+              value={reconRemarks}
+              onChange={(e) => setReconRemarks(e.target.value)}
+              placeholder="Physical shelf verification remarks..."
+              className="k-textarea"
+              required
+              minLength={3}
+            />
+          </div>
+
+          <div className="flex gap-2">
+            <button type="button" onClick={() => setReconOpen(false)} className="k-btn-secondary flex-1">
+              {t('cancel')}
+            </button>
+            <button type="submit" disabled={submitting} className="k-btn-primary flex-1">
+              {submitting ? t('loading') : 'Record & Approve Adjustment'}
+            </button>
+          </div>
+        </form>
+      </ModalDialog>
+
+      {/* Spoilage / Reconciliation Approval Remarks Modal */}
+      <ModalDialog
+        open={Boolean(approvalTarget)}
+        onClose={() => setApprovalTarget(null)}
+        title={approvalTarget?.label || 'Review Decision'}
+      >
+        <form onSubmit={submitApprovalDecision} className="space-y-4">
+          <div>
+            <label className="mb-1 block text-xs font-semibold">Official Remarks</label>
+            <textarea
+              rows={3}
+              value={approvalRemarks}
+              onChange={(e) => setApprovalRemarks(e.target.value)}
+              className="k-textarea"
+              required
+              minLength={3}
+              placeholder="Enter justification or verification notes..."
+            />
+          </div>
+          <div className="flex gap-2">
+            <button type="button" onClick={() => setApprovalTarget(null)} className="k-btn-secondary flex-1">
+              {t('cancel')}
+            </button>
+            <button type="submit" disabled={submitting} className="k-btn-primary flex-1">
+              {submitting ? t('loading') : 'Confirm Decision'}
+            </button>
+          </div>
+        </form>
+      </ModalDialog>
+
+      {/* Beneficiary Approval Remarks Modal */}
+      <ModalDialog
+        open={Boolean(benReviewTarget)}
+        onClose={() => setBenReviewTarget(null)}
+        title={
+          benReviewTarget?.action === 'APPROVE'
+            ? 'Approve Beneficiary Reference'
+            : 'Reject Beneficiary Reference'
+        }
+        subtitle={benReviewTarget?.beneficiary.displayName}
+      >
+        <form onSubmit={submitBeneficiaryReview} className="space-y-4">
+          <div>
+            <label className="mb-1 block text-xs font-semibold">
+              Mukhya Sevika Verification Remarks
+            </label>
+            <textarea
+              rows={3}
+              value={benReviewRemarks}
+              onChange={(e) => setBenReviewRemarks(e.target.value)}
+              className="k-textarea"
+              required
+              minLength={3}
+              placeholder="Enter verification notes..."
+            />
+          </div>
+          <div className="flex gap-2">
+            <button type="button" onClick={() => setBenReviewTarget(null)} className="k-btn-secondary flex-1">
+              {t('cancel')}
+            </button>
+            <button type="submit" disabled={submitting} className="k-btn-primary flex-1">
+              {submitting ? t('loading') : 'Confirm'}
+            </button>
+          </div>
+        </form>
+      </ModalDialog>
+    </div>
+  );
+}
+

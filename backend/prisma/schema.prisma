@@ -1,0 +1,608 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  AWW
+  AWH
+  SUPPLIER
+  SUPERVISOR
+  CDPO
+  DPO
+  TDO
+  DDO
+}
+
+enum ProductCategory {
+  THR
+  HCM
+}
+
+enum BatchStatus {
+  ACTIVE
+  QUARANTINED
+  EXPIRED
+  DAMAGED
+}
+
+enum DispatchStatus {
+  DRAFT
+  DISPATCHED
+  DELIVERED
+  DISCREPANCY
+  CANCELLED
+}
+
+enum LedgerEventType {
+  OPENING_STOCK
+  RECEIVED
+  DISTRIBUTED
+  CONSUMED
+  SPOILAGE
+  ADJUSTMENT_IN
+  ADJUSTMENT_OUT
+  RECONCILIATION
+}
+
+enum SpoilageStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum DiscrepancyStatus {
+  OPEN
+  RECOUNT_REQUESTED
+  APPROVED
+  REJECTED
+  RESOLVED
+}
+
+enum ReconciliationStatus {
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+}
+
+enum AlertType {
+  REORDER_WARNING
+  REORDER_CRITICAL
+  STOCKOUT
+  EXPIRING_SOON
+  EXPIRED
+  DISCREPANCY
+  PENDING_DELIVERY
+}
+
+enum AlertSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+enum SyncStatus {
+  SYNCED
+  FAILED
+  CONFLICT
+}
+
+enum BeneficiaryCategory {
+  PREGNANT_WOMAN
+  LACTATING_MOTHER
+  CHILD_6M_3Y
+  CHILD_3Y_6Y
+  ADOLESCENT_GIRL
+}
+
+enum BeneficiaryStatus {
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+}
+
+enum NutritionIndicator {
+  UNDERWEIGHT_PCT
+  WASTING_PCT
+  SAM_PCT
+}
+
+model District {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  code      String   @unique
+  state     String   @default("Gujarat")
+  createdAt DateTime @default(now())
+
+  blocks Block[]
+  users  User[]
+}
+
+model Block {
+  id         String   @id @default(uuid()) @db.Uuid
+  districtId String   @db.Uuid
+  name       String
+  code       String   @unique
+  createdAt  DateTime @default(now())
+
+  district            District             @relation(fields: [districtId], references: [id])
+  sectors             Sector[]
+  users               User[]
+  nutritionAggregates NutritionAggregate[]
+
+  @@index([districtId])
+}
+
+model Sector {
+  id        String   @id @default(uuid()) @db.Uuid
+  blockId   String   @db.Uuid
+  name      String
+  code      String   @unique
+  createdAt DateTime @default(now())
+
+  block   Block             @relation(fields: [blockId], references: [id])
+  centres AnganwadiCentre[]
+  users   User[]
+
+  @@index([blockId])
+}
+
+model AnganwadiCentre {
+  id        String   @id @default(uuid()) @db.Uuid
+  sectorId  String   @db.Uuid
+  name      String
+  nameGu    String?
+  code      String   @unique
+  location  String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  sector          Sector                 @relation(fields: [sectorId], references: [id])
+  users           User[]
+  beneficiaries   BeneficiaryReference[]
+  dispatches      Dispatch[]
+  ledgerEvents    StockLedgerEvent[]
+  distributions   Distribution[]
+  spoilageReports SpoilageReport[]
+  reconciliations Reconciliation[]
+  alerts          Alert[]
+
+  @@index([sectorId])
+}
+
+model Supplier {
+  id                 String   @id @default(uuid()) @db.Uuid
+  name               String
+  code               String   @unique
+  contactInformation String
+  status             String   @default("ACTIVE")
+  createdAt          DateTime @default(now())
+
+  users      User[]
+  batches    ProductBatch[]
+  dispatches Dispatch[]
+}
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  name         String
+  nameGu       String?
+  username     String   @unique
+  email        String?  @unique
+  passwordHash String
+  role         Role
+  centreId     String?  @db.Uuid
+  sectorId     String?  @db.Uuid
+  blockId      String?  @db.Uuid
+  districtId   String?  @db.Uuid
+  supplierId   String?  @db.Uuid
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  centre   AnganwadiCentre? @relation(fields: [centreId], references: [id])
+  sector   Sector?          @relation(fields: [sectorId], references: [id])
+  block    Block?           @relation(fields: [blockId], references: [id])
+  district District?        @relation(fields: [districtId], references: [id])
+  supplier Supplier?        @relation(fields: [supplierId], references: [id])
+
+  refreshTokens          RefreshToken[]
+  createdDispatches      Dispatch[]         @relation("DispatchCreatedBy")
+  deliveryReceipts       DeliveryReceipt[]  @relation("ReceiptReceivedBy")
+  ledgerEvents           StockLedgerEvent[]
+  distributions          Distribution[]
+  reportedSpoilages      SpoilageReport[]   @relation("SpoilageReportedBy")
+  reviewedSpoilages      SpoilageReport[]   @relation("SpoilageReviewedBy")
+  resolvedDiscrepancies  DiscrepancyCase[]  @relation("DiscrepancyResolvedBy")
+  verifiedReconciliations Reconciliation[]  @relation("ReconciliationVerifiedBy")
+  approvedReconciliations Reconciliation[]  @relation("ReconciliationApprovedBy")
+  requestedBeneficiaries BeneficiaryReference[] @relation("BeneficiaryRequestedBy")
+  reviewedBeneficiaries  BeneficiaryReference[] @relation("BeneficiaryReviewedBy")
+  approvals              Approval[]
+  auditLogs              AuditLog[]
+  syncOperations         SyncOperation[]
+
+  @@index([role])
+  @@index([centreId])
+  @@index([sectorId])
+  @@index([blockId])
+  @@index([districtId])
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  tokenHash String    @unique
+  userId    String    @db.Uuid
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model BeneficiaryReference {
+  id                           String              @id @default(uuid()) @db.Uuid
+  centreId                     String              @db.Uuid
+  localReference               String
+  displayName                  String
+  displayNameGu                String?
+  maskedIdLast4                String
+  yob                          String?
+  beneficiaryCategory          BeneficiaryCategory
+  protectedCredentialReference String              @unique
+  status                       BeneficiaryStatus   @default(APPROVED)
+  requestedBy                  String?             @db.Uuid
+  reviewedBy                   String?             @db.Uuid
+  reviewRemarks                String?
+  reviewedAt                   DateTime?
+  isActive                     Boolean             @default(true)
+  createdAt                    DateTime            @default(now())
+
+  centre        AnganwadiCentre @relation(fields: [centreId], references: [id])
+  requester     User?           @relation("BeneficiaryRequestedBy", fields: [requestedBy], references: [id])
+  reviewer      User?           @relation("BeneficiaryReviewedBy", fields: [reviewedBy], references: [id])
+  distributions Distribution[]
+
+  @@unique([centreId, localReference])
+  @@index([centreId])
+  @@index([status])
+}
+
+model Product {
+  id               String          @id @default(uuid()) @db.Uuid
+  code             String          @unique
+  name             String
+  nameGu           String
+  category         ProductCategory
+  unit             String
+  defaultDailyRate Float           @default(8)
+  isActive         Boolean         @default(true)
+  createdAt        DateTime        @default(now())
+
+  batches         ProductBatch[]
+  dispatchItems   DispatchItem[]
+  receiptItems    DeliveryReceiptItem[]
+  ledgerEvents    StockLedgerEvent[]
+  distributions   Distribution[]
+  spoilageReports SpoilageReport[]
+  reconciliations Reconciliation[]
+  alerts          Alert[]
+}
+
+model ProductBatch {
+  id                String      @id @default(uuid()) @db.Uuid
+  productId         String      @db.Uuid
+  batchNumber       String
+  manufacturingDate DateTime?
+  expiryDate        DateTime
+  supplierId        String      @db.Uuid
+  status            BatchStatus @default(ACTIVE)
+  createdAt         DateTime    @default(now())
+
+  product         Product               @relation(fields: [productId], references: [id])
+  supplier        Supplier              @relation(fields: [supplierId], references: [id])
+  dispatchItems   DispatchItem[]
+  receiptItems    DeliveryReceiptItem[]
+  ledgerEvents    StockLedgerEvent[]
+  distributions   Distribution[]
+  spoilageReports SpoilageReport[]
+  reconciliations Reconciliation[]
+  alerts          Alert[]
+
+  @@unique([productId, batchNumber, supplierId])
+  @@index([productId, expiryDate])
+  @@index([supplierId])
+}
+
+model Dispatch {
+  id                  String         @id @default(uuid()) @db.Uuid
+  supplierId          String         @db.Uuid
+  destinationCentreId String         @db.Uuid
+  dispatchReference   String         @unique
+  status              DispatchStatus @default(DISPATCHED)
+  dispatchDate        DateTime
+  evidenceUrl         String?
+  notes               String?
+  createdBy           String         @db.Uuid
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+
+  supplier          Supplier          @relation(fields: [supplierId], references: [id])
+  destinationCentre AnganwadiCentre   @relation(fields: [destinationCentreId], references: [id])
+  creator           User              @relation("DispatchCreatedBy", fields: [createdBy], references: [id])
+  items             DispatchItem[]
+  deliveryReceipt   DeliveryReceipt?
+  discrepancyCases  DiscrepancyCase[]
+
+  @@index([supplierId])
+  @@index([destinationCentreId])
+  @@index([status])
+}
+
+model DispatchItem {
+  id               String @id @default(uuid()) @db.Uuid
+  dispatchId       String @db.Uuid
+  productId        String @db.Uuid
+  batchId          String @db.Uuid
+  expectedQuantity Float
+
+  dispatch Dispatch     @relation(fields: [dispatchId], references: [id], onDelete: Cascade)
+  product  Product      @relation(fields: [productId], references: [id])
+  batch    ProductBatch @relation(fields: [batchId], references: [id])
+
+  @@index([dispatchId])
+}
+
+model DeliveryReceipt {
+  id               String   @id @default(uuid()) @db.Uuid
+  dispatchId       String   @unique @db.Uuid
+  expectedQuantity Float
+  acceptedQuantity Float
+  damagedQuantity  Float    @default(0)
+  missingQuantity  Float    @default(0)
+  evidenceUrl      String?
+  notes            String?
+  receivedBy       String   @db.Uuid
+  receivedAt       DateTime @default(now())
+  idempotencyKey   String   @unique
+
+  dispatch        Dispatch              @relation(fields: [dispatchId], references: [id])
+  receiver        User                  @relation("ReceiptReceivedBy", fields: [receivedBy], references: [id])
+  items           DeliveryReceiptItem[]
+  discrepancyCase DiscrepancyCase?
+
+  @@index([receivedBy])
+}
+
+model DeliveryReceiptItem {
+  id                String @id @default(uuid()) @db.Uuid
+  deliveryReceiptId String @db.Uuid
+  productId         String @db.Uuid
+  batchId           String @db.Uuid
+  expectedQuantity  Float
+  acceptedQuantity  Float
+  damagedQuantity   Float  @default(0)
+  missingQuantity   Float  @default(0)
+
+  deliveryReceipt DeliveryReceipt @relation(fields: [deliveryReceiptId], references: [id], onDelete: Cascade)
+  product         Product         @relation(fields: [productId], references: [id])
+  batch           ProductBatch    @relation(fields: [batchId], references: [id])
+
+  @@index([deliveryReceiptId])
+}
+
+model StockLedgerEvent {
+  id             String          @id @default(uuid()) @db.Uuid
+  centreId       String          @db.Uuid
+  productId      String          @db.Uuid
+  batchId        String          @db.Uuid
+  eventType      LedgerEventType
+  quantity       Float
+  referenceId    String?
+  referenceType  String?
+  remarks        String?
+  idempotencyKey String          @unique
+  createdBy      String          @db.Uuid
+  createdAt      DateTime        @default(now())
+
+  centre  AnganwadiCentre @relation(fields: [centreId], references: [id])
+  product Product         @relation(fields: [productId], references: [id])
+  batch   ProductBatch    @relation(fields: [batchId], references: [id])
+  actor   User            @relation(fields: [createdBy], references: [id])
+
+  @@index([centreId, productId, batchId])
+  @@index([centreId, createdAt])
+  @@index([eventType])
+}
+
+model Distribution {
+  id                     String   @id @default(uuid()) @db.Uuid
+  centreId               String   @db.Uuid
+  beneficiaryReferenceId String   @db.Uuid
+  productId              String   @db.Uuid
+  batchId                String   @db.Uuid
+  quantity               Float
+  distributedBy          String   @db.Uuid
+  distributedAt          DateTime @default(now())
+  distributionDay        String   // YYYY-MM-DD in IST/local date for daily duplicate ration protection
+  idempotencyKey         String   @unique
+  remarks                String?
+
+  centre      AnganwadiCentre      @relation(fields: [centreId], references: [id])
+  beneficiary BeneficiaryReference @relation(fields: [beneficiaryReferenceId], references: [id])
+  product     Product              @relation(fields: [productId], references: [id])
+  batch       ProductBatch         @relation(fields: [batchId], references: [id])
+  worker      User                 @relation(fields: [distributedBy], references: [id])
+
+  @@index([centreId, distributedAt])
+  @@index([beneficiaryReferenceId, productId, distributionDay])
+}
+
+model SpoilageReport {
+  id                String         @id @default(uuid()) @db.Uuid
+  centreId          String         @db.Uuid
+  productId         String         @db.Uuid
+  batchId           String         @db.Uuid
+  quantity          Float
+  reason            String
+  evidenceReference String?
+  remarks           String?
+  status            SpoilageStatus @default(PENDING)
+  reportedBy        String         @db.Uuid
+  reviewedBy        String?        @db.Uuid
+  reviewRemarks     String?
+  reviewedAt        DateTime?
+  idempotencyKey    String         @unique
+  createdAt         DateTime       @default(now())
+
+  centre   AnganwadiCentre @relation(fields: [centreId], references: [id])
+  product  Product         @relation(fields: [productId], references: [id])
+  batch    ProductBatch    @relation(fields: [batchId], references: [id])
+  reporter User            @relation("SpoilageReportedBy", fields: [reportedBy], references: [id])
+  reviewer User?           @relation("SpoilageReviewedBy", fields: [reviewedBy], references: [id])
+
+  @@index([centreId, status])
+}
+
+model DiscrepancyCase {
+  id                String            @id @default(uuid()) @db.Uuid
+  dispatchId        String            @db.Uuid
+  deliveryReceiptId String?           @unique @db.Uuid
+  expectedQuantity  Float
+  actualQuantity    Float
+  damagedQuantity   Float             @default(0)
+  missingQuantity   Float             @default(0)
+  difference        Float
+  status            DiscrepancyStatus @default(OPEN)
+  resolutionRemarks String?
+  resolvedBy        String?           @db.Uuid
+  resolvedAt        DateTime?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  dispatch        Dispatch         @relation(fields: [dispatchId], references: [id])
+  deliveryReceipt DeliveryReceipt? @relation(fields: [deliveryReceiptId], references: [id])
+  resolver        User?            @relation("DiscrepancyResolvedBy", fields: [resolvedBy], references: [id])
+
+  @@index([dispatchId])
+  @@index([status])
+}
+
+model Reconciliation {
+  id              String               @id @default(uuid()) @db.Uuid
+  centreId        String               @db.Uuid
+  productId       String               @db.Uuid
+  batchId         String               @db.Uuid
+  calculatedStock Float
+  physicalStock   Float
+  variance        Float
+  status          ReconciliationStatus @default(PENDING_APPROVAL)
+  remarks         String?
+  verifiedBy      String               @db.Uuid
+  approvedBy      String?              @db.Uuid
+  approvalRemarks String?
+  verifiedAt      DateTime             @default(now())
+  approvedAt      DateTime?
+
+  centre   AnganwadiCentre @relation(fields: [centreId], references: [id])
+  product  Product         @relation(fields: [productId], references: [id])
+  batch    ProductBatch    @relation(fields: [batchId], references: [id])
+  verifier User            @relation("ReconciliationVerifiedBy", fields: [verifiedBy], references: [id])
+  approver User?           @relation("ReconciliationApprovedBy", fields: [approvedBy], references: [id])
+
+  @@index([centreId, status])
+}
+
+model Approval {
+  id         String   @id @default(uuid()) @db.Uuid
+  entityType String
+  entityId   String   @db.Uuid
+  action     String
+  actorId    String   @db.Uuid
+  remarks    String
+  createdAt  DateTime @default(now())
+
+  actor User @relation(fields: [actorId], references: [id])
+
+  @@index([entityType, entityId])
+}
+
+model Alert {
+  id          String        @id @default(uuid()) @db.Uuid
+  centreId    String        @db.Uuid
+  productId   String?       @db.Uuid
+  batchId     String?       @db.Uuid
+  alertType   AlertType
+  severity    AlertSeverity
+  message     String
+  messageGu   String
+  daysOfStock Float?
+  isEstimated Boolean       @default(false)
+  isResolved  Boolean       @default(false)
+  resolvedAt  DateTime?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  centre  AnganwadiCentre @relation(fields: [centreId], references: [id])
+  product Product?        @relation(fields: [productId], references: [id])
+  batch   ProductBatch?   @relation(fields: [batchId], references: [id])
+
+  @@index([centreId, isResolved])
+  @@index([alertType, isResolved])
+}
+
+model AuditLog {
+  id          String   @id @default(uuid()) @db.Uuid
+  actorId     String?  @db.Uuid
+  action      String
+  entityType  String
+  entityId    String
+  beforeState Json?
+  afterState  Json?
+  remarks     String?
+  timestamp   DateTime @default(now())
+
+  actor User? @relation(fields: [actorId], references: [id])
+
+  @@index([entityType, entityId])
+  @@index([actorId, timestamp])
+}
+
+model SyncOperation {
+  id            String     @id @default(uuid()) @db.Uuid
+  operationUuid String     @unique
+  operationType String
+  userId        String     @db.Uuid
+  centreId      String?    @db.Uuid
+  status        SyncStatus
+  errorMessage  String?
+  createdAt     DateTime
+  syncedAt      DateTime   @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId, syncedAt])
+}
+
+model NutritionAggregate {
+  id              String             @id @default(uuid()) @db.Uuid
+  blockId         String             @db.Uuid
+  reportingPeriod String
+  indicator       NutritionIndicator
+  value           Float
+  source          String
+  isSyntheticDemo Boolean            @default(true)
+  createdAt       DateTime           @default(now())
+
+  block Block @relation(fields: [blockId], references: [id])
+
+  @@unique([blockId, reportingPeriod, indicator])
+  @@index([blockId])
+}
+

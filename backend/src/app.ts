@@ -1,0 +1,78 @@
+import express from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import path from 'path';
+import { env } from './config/env';
+import { errorHandler } from './lib/errors';
+import { authRouter } from './routes/auth.routes';
+import { inventoryRouter } from './routes/inventory.routes';
+import { dispatchRouter } from './routes/dispatch.routes';
+import { approvalRouter, discrepancyRouter } from './routes/discrepancy.routes';
+import { beneficiaryRouter, distributionRouter } from './routes/distribution.routes';
+import { analyticsRouter } from './routes/analytics.routes';
+import { syncRouter } from './routes/sync.routes';
+import { prisma } from './lib/prisma';
+
+export function createApp() {
+  const app = express();
+
+  app.use(
+    helmet({
+      crossOriginResourcePolicy: { policy: 'cross-origin' },
+    })
+  );
+
+  app.use(
+    cors({
+      origin: env.nodeEnv === 'development' ? true : [env.frontendUrl],
+      credentials: true,
+    })
+  );
+
+  app.use(express.json({ limit: '2mb' }));
+  app.use(express.urlencoded({ extended: true }));
+
+  app.use('/uploads', express.static(path.resolve(env.uploadDir)));
+
+  app.get('/health', async (_req, res) => {
+    try {
+      await prisma.$queryRaw`SELECT 1`;
+      res.json({
+        success: true,
+        status: 'healthy',
+        service: 'khorak-api',
+        timestamp: new Date().toISOString(),
+      });
+    } catch {
+      res.status(503).json({
+        success: false,
+        status: 'unhealthy',
+        service: 'khorak-api',
+      });
+    }
+  });
+
+  app.use('/api/auth', authRouter);
+  app.use('/api/inventory', inventoryRouter);
+  app.use('/api/dispatches', dispatchRouter);
+  app.use('/api/discrepancies', discrepancyRouter);
+  app.use('/api/approvals', approvalRouter);
+  app.use('/api/distributions', distributionRouter);
+  app.use('/api/beneficiaries', beneficiaryRouter);
+  app.use('/api/sync', syncRouter);
+  app.use('/api', analyticsRouter);
+
+  app.use((_req, res) => {
+    res.status(404).json({
+      success: false,
+      error: {
+        code: 'ROUTE_NOT_FOUND',
+        message: 'API endpoint not found',
+      },
+    });
+  });
+
+  app.use(errorHandler);
+  return app;
+}
+
