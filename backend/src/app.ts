@@ -52,11 +52,15 @@ export function createApp() {
         service: 'khorak-api',
         timestamp: new Date().toISOString(),
       });
-    } catch {
+    } catch (err) {
+      const anyErr = err as { code?: string; name?: string; message?: string };
       res.status(503).json({
         success: false,
         status: 'unhealthy',
         service: 'khorak-api',
+        databaseUrlSet: Boolean(process.env.DATABASE_URL),
+        errorName: anyErr?.name || 'UnknownError',
+        errorCode: anyErr?.code || null,
       });
     }
   });
