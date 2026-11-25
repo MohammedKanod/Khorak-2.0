@@ -177,8 +177,13 @@ async function computeAggregatedMetrics(centreFilter: Record<string, unknown>) {
 
   const centreRows = [];
 
-  for (const c of centres) {
-    const summary = await getCentreInventorySummary(c.id);
+  const summaries = await Promise.all(
+    centres.map((c) => getCentreInventorySummary(c.id))
+  );
+
+  for (let i = 0; i < centres.length; i++) {
+    const c = centres[i];
+    const summary = summaries[i];
     const cUsable = roundQty(summary.reduce((s, p) => s + p.usableStock, 0));
     const hasLow = summary.some(
       (p) => p.reorderLevel === 'WARNING' || p.reorderLevel === 'CRITICAL'

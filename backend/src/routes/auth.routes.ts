@@ -51,48 +51,50 @@ function signRefreshToken(userId: string, role: string): string {
   });
 }
 
-async function getUserProfile(userId: string) {
-  return prisma.user.findUnique({
-    where: { id: userId },
+const userProfileSelect = {
+  id: true,
+  name: true,
+  nameGu: true,
+  username: true,
+  email: true,
+  role: true,
+  centreId: true,
+  sectorId: true,
+  blockId: true,
+  districtId: true,
+  supplierId: true,
+  centre: {
     select: {
       id: true,
       name: true,
       nameGu: true,
-      username: true,
-      email: true,
-      role: true,
-      centreId: true,
-      sectorId: true,
-      blockId: true,
-      districtId: true,
-      supplierId: true,
-      centre: {
+      code: true,
+      location: true,
+      sector: {
         select: {
           id: true,
           name: true,
-          nameGu: true,
-          code: true,
-          location: true,
-          sector: {
+          block: {
             select: {
               id: true,
               name: true,
-              block: {
-                select: {
-                  id: true,
-                  name: true,
-                  district: { select: { id: true, name: true } },
-                },
-              },
+              district: { select: { id: true, name: true } },
             },
           },
         },
       },
-      sector: { select: { id: true, name: true, blockId: true } },
-      block: { select: { id: true, name: true, districtId: true } },
-      district: { select: { id: true, name: true } },
-      supplier: { select: { id: true, name: true, code: true } },
     },
+  },
+  sector: { select: { id: true, name: true, blockId: true } },
+  block: { select: { id: true, name: true, districtId: true } },
+  district: { select: { id: true, name: true } },
+  supplier: { select: { id: true, name: true, code: true } },
+} as const;
+
+async function getUserProfile(userId: string) {
+  return prisma.user.findUnique({
+    where: { id: userId },
+    select: userProfileSelect,
   });
 }
 
@@ -108,6 +110,11 @@ authRouter.post('/login', loginRateLimiter, async (req, res, next) => {
           { email: { equals: identifier, mode: 'insensitive' } },
         ],
       },
+      select: {
+        ...userProfileSelect,
+        passwordHash: true,
+        isActive: true,
+      },
     });
 
     if (!user || !user.isActive) {
@@ -122,23 +129,24 @@ authRouter.post('/login', loginRateLimiter, async (req, res, next) => {
     const accessToken = signAccessToken(user.id, user.role);
     const refreshToken = signRefreshToken(user.id, user.role);
 
-    await prisma.refreshToken.create({
-      data: {
-        tokenHash: hashToken(refreshToken),
-        userId: user.id,
-        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-      },
-    });
+    await Promise.all([
+      prisma.refreshToken.create({
+        data: {
+          tokenHash: hashToken(refreshToken),
+          userId: user.id,
+          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        },
+      }),
+      recordAuditLog(prisma, {
+        actorId: user.id,
+        action: 'LOGIN',
+        entityType: 'User',
+        entityId: user.id,
+        remarks: `Role ${user.role} signed in`,
+      }),
+    ]);
 
-    await recordAuditLog(prisma, {
-      actorId: user.id,
-      action: 'LOGIN',
-      entityType: 'User',
-      entityId: user.id,
-      remarks: `Role ${user.role} signed in`,
-    });
-
-    const profile = await getUserProfile(user.id);
+    const { passwordHash: _ph, isActive: _ia, ...profile } = user;
 
     res.json({
       success: true,
@@ -210,24 +218,23 @@ authRouter.post('/refresh', async (req, res, next) => {
 authRouter.post('/logout', requireAuth, async (req, res, next) => {
   try {
     const token = typeof req.body?.refreshToken === 'string' ? req.body.refreshToken : null;
-    if (token) {
-      await prisma.refreshToken.updateMany({
-        where: { tokenHash: hashToken(token), userId: req.user!.id },
-        data: { revokedAt: new Date() },
-      });
-    } else {
-      await prisma.refreshToken.updateMany({
-        where: { userId: req.user!.id, revokedAt: null },
-        data: { revokedAt: new Date() },
-      });
-    }
-
-    await recordAuditLog(prisma, {
-      actorId: req.user!.id,
-      action: 'LOGOUT',
-      entityType: 'User',
-      entityId: req.user!.id,
-    });
+    await Promise.all([
+      token
+        ? prisma.refreshToken.updateMany({
+            where: { tokenHash: hashToken(token), userId: req.user!.id },
+            data: { revokedAt: new Date() },
+          })
+        : prisma.refreshToken.updateMany({
+            where: { userId: req.user!.id, revokedAt: null },
+            data: { revokedAt: new Date() },
+          }),
+      recordAuditLog(prisma, {
+        actorId: req.user!.id,
+        action: 'LOGOUT',
+        entityType: 'User',
+        entityId: req.user!.id,
+      }),
+    ]);
 
     res.json({ success: true, data: { loggedOut: true } });
   } catch (err) {

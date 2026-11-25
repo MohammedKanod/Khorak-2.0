@@ -2,11 +2,12 @@ import React, { createContext, useContext, useEffect, useState } from 'react';
 import { UserProfile } from '../types';
 import {
   apiRequest,
+  apiUrl,
   clearStoredTokens,
   getStoredTokens,
   setStoredTokens,
 } from '../lib/api';
-import { pullCentreSnapshot, syncOutboxOperations } from '../lib/offlineDb';
+import { syncOutboxOperations } from '../lib/offlineDb';
 
 interface AuthContextValue {
   user: UserProfile | null;
@@ -31,7 +32,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return null;
     }
   });
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => {
+    const hasToken = Boolean(getStoredTokens().accessToken);
+    const hasCachedUser = Boolean(localStorage.getItem(USER_CACHE_KEY));
+    return hasToken && !hasCachedUser;
+  });
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
 
   useEffect(() => {
@@ -63,9 +68,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const res = await apiRequest<{ success: boolean; data: UserProfile }>('/api/auth/me');
       setUser(res.data);
       localStorage.setItem(USER_CACHE_KEY, JSON.stringify(res.data));
-      if (res.data.centreId && navigator.onLine) {
-        await pullCentreSnapshot(res.data.centreId);
-      }
     } catch (err: unknown) {
       const anyErr = err as { isOffline?: boolean };
       if (!anyErr?.isOffline) {
@@ -95,25 +97,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     localStorage.setItem(USER_CACHE_KEY, JSON.stringify(res.data.user));
     setUser(res.data.user);
 
-    if (res.data.user.centreId) {
-      pullCentreSnapshot(res.data.user.centreId).catch(() => undefined);
-    }
-
     return res.data.user;
   };
 
   const logout = async () => {
-    const { refreshToken } = getStoredTokens();
-    try {
-      await apiRequest('/api/auth/logout', {
-        method: 'POST',
-        body: JSON.stringify({ refreshToken }),
-      });
-    } catch {
-      // Ignore network errors during logout
-    }
+    const { accessToken, refreshToken } = getStoredTokens();
+    // Clear local session immediately so Sign Out UI feels instant
     clearStoredTokens();
     setUser(null);
+
+    if (accessToken) {
+      fetch(apiUrl('/api/auth/logout'), {
+        method: 'POST',
+        keepalive: true,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({ refreshToken }),
+      }).catch(() => undefined);
+    }
   };
 
   return React.createElement(
