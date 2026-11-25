@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import rateLimit from 'express-rate-limit';
+import { waitUntil } from '@vercel/functions';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { env } from '../config/env';
@@ -48,6 +49,7 @@ function signAccessToken(userId: string, role: string): string {
 function signRefreshToken(userId: string, role: string): string {
   return jwt.sign({ sub: userId, role, type: 'refresh' }, env.jwtRefreshSecret, {
     expiresIn: env.jwtRefreshExpiresIn as jwt.SignOptions['expiresIn'],
+    jwtid: crypto.randomUUID(),
   });
 }
 
@@ -103,19 +105,25 @@ authRouter.post('/login', loginRateLimiter, async (req, res, next) => {
     const parsed = loginSchema.parse(req.body);
     const identifier = parsed.username.toLowerCase();
 
-    const user = await prisma.user.findFirst({
-      where: {
-        OR: [
-          { username: { equals: identifier, mode: 'insensitive' } },
-          { email: { equals: identifier, mode: 'insensitive' } },
-        ],
-      },
-      select: {
-        ...userProfileSelect,
-        passwordHash: true,
-        isActive: true,
-      },
-    });
+    // Usernames and emails are stored normalized to lowercase so plain equality
+    // hits the @unique B-tree indexes directly without a full-table LOWER() scan.
+    const user = identifier.includes('@')
+      ? await prisma.user.findFirst({
+          where: { OR: [{ email: identifier }, { username: identifier }] },
+          select: {
+            ...userProfileSelect,
+            passwordHash: true,
+            isActive: true,
+          },
+        })
+      : await prisma.user.findUnique({
+          where: { username: identifier },
+          select: {
+            ...userProfileSelect,
+            passwordHash: true,
+            isActive: true,
+          },
+        });
 
     if (!user || !user.isActive) {
       throw new AppError(401, 'INVALID_CREDENTIALS', 'Invalid username or password');
@@ -129,22 +137,27 @@ authRouter.post('/login', loginRateLimiter, async (req, res, next) => {
     const accessToken = signAccessToken(user.id, user.role);
     const refreshToken = signRefreshToken(user.id, user.role);
 
-    await Promise.all([
-      prisma.refreshToken.create({
-        data: {
-          tokenHash: hashToken(refreshToken),
-          userId: user.id,
-          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-        },
-      }),
-      recordAuditLog(prisma, {
-        actorId: user.id,
-        action: 'LOGIN',
-        entityType: 'User',
-        entityId: user.id,
-        remarks: `Role ${user.role} signed in`,
-      }),
-    ]);
+    await prisma.refreshToken.create({
+      data: {
+        tokenHash: hashToken(refreshToken),
+        userId: user.id,
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      },
+    });
+
+    const auditPromise = recordAuditLog(prisma, {
+      actorId: user.id,
+      action: 'LOGIN',
+      entityType: 'User',
+      entityId: user.id,
+      remarks: `Role ${user.role} signed in`,
+    }).catch((err) => console.error('[AuditLog login bg error]', err));
+
+    if (env.isVercel) {
+      waitUntil(auditPromise);
+    } else if (env.nodeEnv === 'test') {
+      await auditPromise;
+    }
 
     const { passwordHash: _ph, isActive: _ia, ...profile } = user;
 
