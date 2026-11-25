@@ -178,32 +178,34 @@ export function AdminPortal() {
   async function loadDashboard() {
     setLoading(true);
     try {
-      const dashEndpoint = isDistrictLevel ? '/api/dashboard/district' : '/api/dashboard/block';
-      const [mRes, discRes, spoilRes, reconRes, alertRes, dispRes, supRes, distRes, benRes] =
-        await Promise.all([
-          apiRequest<{ success: boolean; data: BlockMetricsResponse }>(dashEndpoint),
-          apiRequest<{ success: boolean; data: DiscrepancyCase[] }>('/api/discrepancies'),
-          apiRequest<{ success: boolean; data: SpoilageRecord[] }>('/api/inventory/spoilage'),
-          apiRequest<{ success: boolean; data: ReconciliationRecord[] }>('/api/inventory/reconciliations'),
-          apiRequest<{ success: boolean; data: AlertItem[] }>('/api/alerts'),
-          apiRequest<{ success: boolean; data: DispatchRecord[] }>('/api/dispatches'),
-          apiRequest<{ success: boolean; data: typeof supplierPerf }>('/api/analytics/suppliers'),
-          apiRequest<{ success: boolean; data: NonNullable<typeof distAnalytics> }>('/api/analytics/distribution'),
-          apiRequest<{ success: boolean; data: BeneficiaryReference[] }>('/api/beneficiaries'),
-        ]);
+      const res = await apiRequest<{
+        success: boolean;
+        data: {
+          metrics: BlockMetricsResponse;
+          discrepancies: DiscrepancyCase[];
+          spoilages: SpoilageRecord[];
+          reconciliations: ReconciliationRecord[];
+          alerts: AlertItem[];
+          dispatches: DispatchRecord[];
+          supplierPerf: typeof supplierPerf;
+          distAnalytics: NonNullable<typeof distAnalytics>;
+          beneficiaries: BeneficiaryReference[];
+        };
+      }>('/api/dashboard/admin-bundle');
 
-      setMetrics(mRes.data);
-      setDiscrepancies(discRes.data);
-      setSpoilages(spoilRes.data);
-      setReconciliations(reconRes.data);
-      setAlerts(alertRes.data);
-      setDispatches(dispRes.data);
-      setSupplierPerf(supRes.data);
-      setDistAnalytics(distRes.data);
-      setBeneficiaries(benRes.data);
+      const bundle = res.data;
+      setMetrics(bundle.metrics);
+      setDiscrepancies(bundle.discrepancies);
+      setSpoilages(bundle.spoilages);
+      setReconciliations(bundle.reconciliations);
+      setAlerts(bundle.alerts);
+      setDispatches(bundle.dispatches);
+      setSupplierPerf(bundle.supplierPerf);
+      setDistAnalytics(bundle.distAnalytics);
+      setBeneficiaries(bundle.beneficiaries);
 
-      if (mRes.data.centres.length > 0 && !reconCentreId) {
-        const firstC = mRes.data.centres[0];
+      if (bundle.metrics.centres.length > 0 && !reconCentreId) {
+        const firstC = bundle.metrics.centres[0];
         setReconCentreId(firstC.centreId);
         const firstProd = firstC.products.find((p) => p.batches.length > 0) || firstC.products[0];
         if (firstProd) {

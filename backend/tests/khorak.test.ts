@@ -384,4 +384,20 @@ describe('KHORAK Acceptance & Supply Chain Integrity Tests', () => {
       });
     expect(distOk.status).toBe(201);
   });
+
+  it('Admin bundle returns all dashboard datasets in one call and enforces RBAC', async () => {
+    const awwRes = await request(app)
+      .get('/api/dashboard/admin-bundle')
+      .set('Authorization', `Bearer ${awwToken}`);
+    expect(awwRes.status).toBe(403);
+
+    const ddoRes = await request(app)
+      .get('/api/dashboard/admin-bundle')
+      .set('Authorization', `Bearer ${ddoToken}`);
+    expect(ddoRes.status).toBe(200);
+    expect(ddoRes.body.data.metrics.kpis.totalCentres).toBeGreaterThanOrEqual(6);
+    expect(Array.isArray(ddoRes.body.data.discrepancies)).toBe(true);
+    expect(Array.isArray(ddoRes.body.data.beneficiaries)).toBe(true);
+    expect(Array.isArray(ddoRes.body.data.metrics.nutritionIndicators)).toBe(true);
+  });
 });

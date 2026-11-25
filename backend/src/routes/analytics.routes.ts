@@ -512,3 +512,282 @@ analyticsRouter.get(
   }
 );
 
+analyticsRouter.get(
+  '/dashboard/admin-bundle',
+  requireRoles(Role.SUPERVISOR, Role.CDPO, Role.TDO, Role.DPO, Role.DDO),
+  async (req, res, next) => {
+    try {
+      const scopeWhere = buildCentreScopeWhere(req.user!);
+      const isDistrictLevel = req.user!.role === Role.DPO || req.user!.role === Role.DDO;
+
+      const [
+        baseMetrics,
+        discrepancies,
+        spoilages,
+        reconciliations,
+        alerts,
+        dispatches,
+        distributions,
+        beneficiaries,
+        nutritionRows,
+      ] = await Promise.all([
+        computeAggregatedMetrics(scopeWhere),
+        prisma.discrepancyCase.findMany({
+          where: { dispatch: { destinationCentre: scopeWhere } },
+          include: {
+            dispatch: {
+              include: {
+                supplier: { select: { id: true, name: true, code: true } },
+                destinationCentre: {
+                  select: {
+                    id: true,
+                    name: true,
+                    nameGu: true,
+                    code: true,
+                    sector: { select: { id: true, name: true, block: { select: { id: true, name: true } } } },
+                  },
+                },
+                items: {
+                  include: {
+                    product: { select: { id: true, name: true, nameGu: true, unit: true } },
+                    batch: { select: { id: true, batchNumber: true } },
+                  },
+                },
+              },
+            },
+            deliveryReceipt: {
+              select: {
+                id: true,
+                evidenceUrl: true,
+                notes: true,
+                receivedAt: true,
+                receiver: { select: { id: true, name: true, role: true } },
+              },
+            },
+            resolver: { select: { id: true, name: true, role: true } },
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 150,
+        }),
+        prisma.spoilageReport.findMany({
+          where: { centre: scopeWhere },
+          include: {
+            centre: { select: { id: true, name: true, nameGu: true, code: true } },
+            product: { select: { id: true, name: true, nameGu: true, unit: true, category: true } },
+            batch: { select: { id: true, batchNumber: true, expiryDate: true } },
+            reporter: { select: { id: true, name: true, role: true } },
+            reviewer: { select: { id: true, name: true, role: true } },
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 100,
+        }),
+        prisma.reconciliation.findMany({
+          where: { centre: scopeWhere },
+          include: {
+            centre: { select: { id: true, name: true, nameGu: true, code: true } },
+            product: { select: { id: true, name: true, nameGu: true, unit: true, category: true } },
+            batch: { select: { id: true, batchNumber: true, expiryDate: true } },
+            verifier: { select: { id: true, name: true, role: true } },
+            approver: { select: { id: true, name: true, role: true } },
+          },
+          orderBy: { verifiedAt: 'desc' },
+          take: 100,
+        }),
+        prisma.alert.findMany({
+          where: { centre: scopeWhere, isResolved: false },
+          include: {
+            centre: {
+              select: {
+                id: true,
+                name: true,
+                nameGu: true,
+                code: true,
+                sector: { select: { name: true, block: { select: { id: true, name: true } } } },
+              },
+            },
+            product: { select: { id: true, name: true, nameGu: true, unit: true, category: true } },
+            batch: { select: { id: true, batchNumber: true, expiryDate: true } },
+          },
+          orderBy: [{ severity: 'desc' }, { createdAt: 'desc' }],
+          take: 250,
+        }),
+        prisma.dispatch.findMany({
+          where: { destinationCentre: scopeWhere },
+          include: {
+            supplier: { select: { id: true, name: true, code: true } },
+            destinationCentre: {
+              select: {
+                id: true,
+                name: true,
+                nameGu: true,
+                code: true,
+                location: true,
+                sector: { select: { id: true, name: true, block: { select: { id: true, name: true } } } },
+              },
+            },
+            items: {
+              include: {
+                product: { select: { id: true, name: true, nameGu: true, unit: true, category: true } },
+                batch: { select: { id: true, batchNumber: true, expiryDate: true, status: true } },
+              },
+            },
+            deliveryReceipt: {
+              include: {
+                receiver: { select: { id: true, name: true, role: true } },
+              },
+            },
+            discrepancyCases: {
+              orderBy: { createdAt: 'desc' },
+              take: 1,
+            },
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 150,
+        }),
+        prisma.distribution.findMany({
+          where: { centre: scopeWhere },
+          include: {
+            product: { select: { id: true, name: true, nameGu: true, category: true, unit: true } },
+          },
+          orderBy: { distributedAt: 'desc' },
+          take: 500,
+        }),
+        prisma.beneficiaryReference.findMany({
+          where: { centre: scopeWhere, isActive: true },
+          select: {
+            id: true,
+            centreId: true,
+            localReference: true,
+            displayName: true,
+            displayNameGu: true,
+            maskedIdLast4: true,
+            yob: true,
+            beneficiaryCategory: true,
+            protectedCredentialReference: true,
+            status: true,
+            reviewRemarks: true,
+            reviewedAt: true,
+            createdAt: true,
+            centre: { select: { id: true, name: true, nameGu: true, code: true } },
+            requester: { select: { id: true, name: true, role: true } },
+            reviewer: { select: { id: true, name: true, role: true } },
+          },
+          orderBy: [{ status: 'asc' }, { createdAt: 'desc' }],
+        }),
+        isDistrictLevel
+          ? prisma.nutritionAggregate.findMany({
+              where: req.user!.districtId
+                ? { block: { districtId: req.user!.districtId } }
+                : undefined,
+              include: { block: { select: { id: true, name: true } } },
+              orderBy: [{ reportingPeriod: 'asc' }, { block: { name: 'asc' } }],
+            })
+          : Promise.resolve(undefined),
+      ]);
+
+      // Derive supplier performance from already-fetched dispatches
+      const supplierMap = new Map<
+        string,
+        {
+          supplierId: string;
+          supplierName: string;
+          code: string;
+          totalDispatches: number;
+          deliveredCount: number;
+          discrepancyCount: number;
+          pendingCount: number;
+          expectedQty: number;
+          acceptedQty: number;
+          fulfilmentRatePct: number;
+        }
+      >();
+
+      for (const d of dispatches) {
+        const entry = supplierMap.get(d.supplierId) || {
+          supplierId: d.supplier.id,
+          supplierName: d.supplier.name,
+          code: d.supplier.code,
+          totalDispatches: 0,
+          deliveredCount: 0,
+          discrepancyCount: 0,
+          pendingCount: 0,
+          expectedQty: 0,
+          acceptedQty: 0,
+          fulfilmentRatePct: 100,
+        };
+        entry.totalDispatches++;
+        if (d.status === DispatchStatus.DELIVERED) entry.deliveredCount++;
+        if (d.status === DispatchStatus.DISCREPANCY) entry.discrepancyCount++;
+        if (d.status === DispatchStatus.DISPATCHED) entry.pendingCount++;
+        if (d.deliveryReceipt) {
+          entry.expectedQty = roundQty(entry.expectedQty + d.deliveryReceipt.expectedQuantity);
+          entry.acceptedQty = roundQty(entry.acceptedQty + d.deliveryReceipt.acceptedQuantity);
+        }
+        entry.fulfilmentRatePct =
+          entry.expectedQty > 0
+            ? Math.round((entry.acceptedQty / entry.expectedQty) * 1000) / 10
+            : 100;
+        supplierMap.set(d.supplierId, entry);
+      }
+
+      // Derive distribution trends from already-fetched distributions
+      const byDayMap = new Map<string, { day: string; totalQuantity: number; count: number }>();
+      const byProductMap = new Map<
+        string,
+        { productName: string; unit: string; totalQuantity: number; count: number }
+      >();
+
+      for (const d of distributions) {
+        const dayItem = byDayMap.get(d.distributionDay) || {
+          day: d.distributionDay,
+          totalQuantity: 0,
+          count: 0,
+        };
+        dayItem.totalQuantity = roundQty(dayItem.totalQuantity + d.quantity);
+        dayItem.count++;
+        byDayMap.set(d.distributionDay, dayItem);
+
+        const pItem = byProductMap.get(d.productId) || {
+          productName: d.product.name,
+          unit: d.product.unit,
+          totalQuantity: 0,
+          count: 0,
+        };
+        pItem.totalQuantity = roundQty(pItem.totalQuantity + d.quantity);
+        pItem.count++;
+        byProductMap.set(d.productId, pItem);
+      }
+
+      res.json({
+        success: true,
+        data: {
+          metrics: {
+            ...baseMetrics,
+            ...(isDistrictLevel
+              ? {
+                  nutritionIndicators: nutritionRows,
+                  nutritionDataNotice:
+                    'Aggregated block-level nutrition indicators are labelled synthetic demonstration data (complements POSHAN Tracker).',
+                }
+              : {}),
+          },
+          discrepancies,
+          spoilages,
+          reconciliations,
+          alerts,
+          dispatches,
+          supplierPerf: Array.from(supplierMap.values()),
+          distAnalytics: {
+            dailyTrend: Array.from(byDayMap.values()).sort((a, b) => a.day.localeCompare(b.day)),
+            byProduct: Array.from(byProductMap.values()),
+            totalTransactions: distributions.length,
+          },
+          beneficiaries,
+        },
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
