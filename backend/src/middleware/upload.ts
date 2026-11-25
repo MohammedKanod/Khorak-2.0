@@ -5,8 +5,16 @@ import crypto from 'crypto';
 import { env } from '../config/env';
 import { AppError } from '../lib/errors';
 
-if (!fs.existsSync(env.uploadDir)) {
-  fs.mkdirSync(env.uploadDir, { recursive: true });
+function ensureUploadDir() {
+  if (!fs.existsSync(env.uploadDir)) {
+    fs.mkdirSync(env.uploadDir, { recursive: true });
+  }
+}
+
+try {
+  ensureUploadDir();
+} catch {
+  // Created lazily on upload if filesystem restricts startup mkdir
 }
 
 const allowedMimeTypes = new Set([
@@ -18,7 +26,12 @@ const allowedMimeTypes = new Set([
 
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => {
-    cb(null, env.uploadDir);
+    try {
+      ensureUploadDir();
+      cb(null, env.uploadDir);
+    } catch (err) {
+      cb(err as Error, env.uploadDir);
+    }
   },
   filename: (_req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase() || '.bin';

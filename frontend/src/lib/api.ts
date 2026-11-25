@@ -1,3 +1,10 @@
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
+
+export function apiUrl(path: string): string {
+  if (/^https?:\/\//i.test(path)) return path;
+  return `${API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`;
+}
+
 export class ApiError extends Error {
   public readonly status: number;
   public readonly code: string;
@@ -41,7 +48,7 @@ async function refreshAccessToken(): Promise<string | null> {
 
   refreshingPromise = (async () => {
     try {
-      const res = await fetch('/api/auth/refresh', {
+      const res = await fetch(apiUrl('/api/auth/refresh'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ refreshToken }),
@@ -80,8 +87,9 @@ export async function apiRequest<T>(
   }
 
   let response: Response;
+  const targetUrl = apiUrl(path);
   try {
-    response = await fetch(path, { ...options, headers });
+    response = await fetch(targetUrl, { ...options, headers });
   } catch {
     throw new ApiError('Network unavailable — device appears offline', 0, 'NETWORK_OFFLINE', true);
   }
@@ -91,7 +99,7 @@ export async function apiRequest<T>(
     if (newAccess) {
       headers.Authorization = `Bearer ${newAccess}`;
       try {
-        response = await fetch(path, { ...options, headers });
+        response = await fetch(targetUrl, { ...options, headers });
       } catch {
         throw new ApiError('Network unavailable', 0, 'NETWORK_OFFLINE', true);
       }

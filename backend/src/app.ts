@@ -15,6 +15,7 @@ import { prisma } from './lib/prisma';
 
 export function createApp() {
   const app = express();
+  app.set('trust proxy', 1);
 
   app.use(
     helmet({
@@ -22,9 +23,17 @@ export function createApp() {
     })
   );
 
+  const allowedOrigins = env.frontendUrl
+    .split(',')
+    .map((s) => s.trim().replace(/\/+$/, ''))
+    .filter(Boolean);
+
   app.use(
     cors({
-      origin: env.nodeEnv === 'development' ? true : [env.frontendUrl],
+      origin:
+        env.nodeEnv === 'development' || allowedOrigins.includes('*')
+          ? true
+          : allowedOrigins,
       credentials: true,
     })
   );
