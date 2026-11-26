@@ -14,6 +14,7 @@ import { syncRouter } from './routes/sync.routes';
 import { appealsRouter } from './routes/appeals.routes';
 import { stockRequestsRouter } from './routes/stockRequests.routes';
 import { prisma } from './lib/prisma';
+import { ensureProductionSchema } from './lib/ensureSchema';
 
 export function createApp() {
   const app = express();
@@ -71,6 +72,15 @@ export function createApp() {
         errorCode: anyErr?.code || null,
         errorMessage: sanitizedMessage || null,
       });
+    }
+  });
+
+  app.use('/api', async (_req, _res, next) => {
+    try {
+      await ensureProductionSchema();
+      next();
+    } catch (err) {
+      next(err);
     }
   });
 

@@ -84,11 +84,19 @@ export function errorHandler(
   }
 
   console.error('[Unhandled Error]', err);
+  const sanitizedDetail =
+    typeof anyErr?.code === 'string' && /^P\d{4}$/.test(anyErr.code)
+      ? `Database error (${anyErr.code})`
+      : 'An unexpected error occurred';
+
   return res.status(anyErr?.status || 500).json({
     success: false,
     error: {
-      code: 'INTERNAL_SERVER_ERROR',
-      message: 'An unexpected error occurred',
+      code:
+        typeof anyErr?.code === 'string' && /^P\d{4}$/.test(anyErr.code)
+          ? `DB_${anyErr.code}`
+          : 'INTERNAL_SERVER_ERROR',
+      message: sanitizedDetail,
     },
   });
 }
