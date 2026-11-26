@@ -10,17 +10,21 @@ import {
 import { ModalDialog } from './ui';
 import { useI18n } from '../locales/translations';
 
-export function QrScannerModal({
-  open,
-  onClose,
+export function QrScannerPanel({
+  active,
   onVerified,
+  centreSalt,
+  defaultMode = 'camera',
+  cameraHeightClass = 'h-80 sm:h-96',
 }: {
-  open: boolean;
-  onClose: () => void;
+  active: boolean;
   onVerified: (cred: ParsedOfflineCredential) => void;
+  centreSalt?: string | null;
+  defaultMode?: 'camera' | 'upload' | 'demo';
+  cameraHeightClass?: string;
 }) {
   const { lang } = useI18n();
-  const [mode, setMode] = useState<'camera' | 'upload' | 'demo'>('demo');
+  const [mode, setMode] = useState<'camera' | 'upload' | 'demo'>(defaultMode);
   const [error, setError] = useState<string | null>(null);
   const [xmlText, setXmlText] = useState('');
   const [cameraActive, setCameraActive] = useState(false);
@@ -32,13 +36,17 @@ export function QrScannerModal({
   const rafRef = useRef<number | null>(null);
 
   useEffect(() => {
-    if (!open) {
+    if (!active) {
       stopCamera();
       setError(null);
       return;
     }
 
-    // Pre-generate real QR images for synthetic samples so evaluators can inspect/download/scan
+    setMode(defaultMode);
+    if (defaultMode === 'camera') {
+      startCamera();
+    }
+
     Promise.all(
       SYNTHETIC_DEMO_QR_SAMPLES.map(async (sample) => {
         const url = await QRCode.toDataURL(sample.xmlPayload, {
@@ -53,7 +61,7 @@ export function QrScannerModal({
       .catch(() => undefined);
 
     return () => stopCamera();
-  }, [open]);
+  }, [active, defaultMode]);
 
   function stopCamera() {
     if (rafRef.current) {
@@ -70,7 +78,7 @@ export function QrScannerModal({
   async function processRawPayload(raw: string) {
     setError(null);
     try {
-      const parsed = await parseAadhaarOfflineQr(raw);
+      const parsed = await parseAadhaarOfflineQr(raw, centreSalt);
       stopCamera();
       onVerified(parsed);
     } catch (err) {
@@ -103,7 +111,7 @@ export function QrScannerModal({
       setError(
         lang === 'gu'
           ? 'કેમેરા ઍક્સેસ નકારાયો અથવા મળ્યો નહીં. QR છબી અપલોડ કરો.'
-          : 'Camera permission denied or no camera found. Upload a QR image instead.'
+          : 'Camera permission denied or unavailable. Switch to File / XML or Demo QR.'
       );
     }
   }
@@ -164,45 +172,18 @@ export function QrScannerModal({
   }
 
   return (
-    <ModalDialog
-      open={open}
-      onClose={() => {
-        stopCamera();
-        onClose();
-      }}
-      title={lang === 'gu' ? 'આધાર ઓફલાઇન XML QR સ્કેનર' : 'Aadhaar Offline XML QR Scanner'}
-      subtitle={
-        lang === 'gu'
-          ? 'ફક્ત ઉપકરણ પર સ્થાનિક પ્રક્રિયા — કોઈ બાહ્ય API કે કાચો આધાર નંબર સંગ્રહ નહીં'
-          : '100% local processing — never transmits raw XML or Aadhaar numbers'
-      }
-    >
+    <div>
       <div className="mb-3 flex items-center gap-2 rounded-lg border border-emerald-900/15 bg-[var(--accent-subtle)] px-3 py-2 text-xs text-[var(--accent)]">
         <ShieldCheck className="h-4 w-4 shrink-0" />
         <span>
           {lang === 'gu'
-            ? 'UIDAI ઓફલાઇન XML સ્થાનિક મેપિંગ (અધિકૃત UIDAI ઓનલાઇન પ્રમાણીકરણ નથી)'
-            : 'Local Offline XML credential mapping (distinct from live UIDAI authentication)'}
+            ? 'UIDAI ઓફલાઇન XML સ્થાનિક મેપિંગ (અધિકૃત UIDAI ઓનલાઇન પ્રમાણીકરણ નથી; કોઈ આધાર અંક સંગ્રહાતા કે દેખાતા નથી)'
+            : 'Local Offline XML mapping (distinct from live UIDAI authentication; zero Aadhaar digits stored or displayed)'}
         </span>
       </div>
 
-      {/* Mode tabs */}
-      <div className="mb-4 grid grid-cols-3 gap-2">
-        <button
-          type="button"
-          onClick={() => {
-            setMode('demo');
-            stopCamera();
-          }}
-          className={`flex items-center justify-center gap-1.5 rounded-lg border px-2 py-2.5 text-xs font-semibold ${
-            mode === 'demo'
-              ? 'border-[var(--accent)] bg-[var(--accent)] text-white'
-              : 'border-[var(--border)] bg-[var(--bg-sunken)] text-[var(--text-primary)]'
-          }`}
-        >
-          <QrCode className="h-4 w-4" />
-          {lang === 'gu' ? 'ડેમો QR' : 'Demo QR'}
-        </button>
+      {/* Mode tabs — Camera 1st! */}
+      <div className="mb-3 grid grid-cols-3 gap-2">
         <button
           type="button"
           onClick={() => {
@@ -233,6 +214,21 @@ export function QrScannerModal({
           <ImageUp className="h-4 w-4" />
           {lang === 'gu' ? 'ફાઇલ / XML' : 'File / XML'}
         </button>
+        <button
+          type="button"
+          onClick={() => {
+            setMode('demo');
+            stopCamera();
+          }}
+          className={`flex items-center justify-center gap-1.5 rounded-lg border px-2 py-2.5 text-xs font-semibold ${
+            mode === 'demo'
+              ? 'border-[var(--accent)] bg-[var(--accent)] text-white'
+              : 'border-[var(--border)] bg-[var(--bg-sunken)] text-[var(--text-primary)]'
+          }`}
+        >
+          <QrCode className="h-4 w-4" />
+          {lang === 'gu' ? 'ડેમો QR' : 'Demo QR'}
+        </button>
       </div>
 
       {error && (
@@ -245,22 +241,32 @@ export function QrScannerModal({
       )}
 
       {mode === 'camera' && (
-        <div className="space-y-3">
-          <div className="relative overflow-hidden rounded-xl border border-[var(--border)] bg-black/90">
-            <video ref={videoRef} className="h-64 w-full object-cover" playsInline muted />
+        <div className="space-y-2.5">
+          <div className="relative overflow-hidden rounded-xl border-2 border-emerald-500/40 bg-black/95">
+            <video ref={videoRef} className={`${cameraHeightClass} w-full object-cover`} playsInline muted />
             <canvas ref={canvasRef} className="hidden" />
+            {cameraActive && (
+              <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                <div className="h-56 w-56 rounded-2xl border-2 border-emerald-400/85 shadow-[0_0_0_9999px_rgba(0,0,0,0.35)] sm:h-64 sm:w-64" />
+              </div>
+            )}
             {!cameraActive && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-white">
-                <Camera className="h-8 w-8 opacity-80" />
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-4 text-center text-white">
+                <Camera className="h-10 w-10 opacity-85" />
                 <button type="button" onClick={startCamera} className="k-btn-saffron">
                   {lang === 'gu' ? 'કેમેરા ચાલુ કરો' : 'Enable Camera'}
                 </button>
+                <p className="text-xs text-white/75">
+                  {lang === 'gu'
+                    ? 'અથવા File / XML કે Demo QR પસંદ કરો.'
+                    : 'Or switch to File / XML or Demo QR above.'}
+                </p>
               </div>
             )}
           </div>
           <p className="text-center text-xs text-[var(--text-secondary)]">
             {lang === 'gu'
-              ? 'લાભાર્થીના આધાર ઓફલાઇન QR કોડને કેમેરાની સામે રાખો.'
+              ? 'લાભાર્થીના આધાર ઓફલાઇન XML QR કોડને કેમેરાની સામે રાખો.'
               : 'Hold the beneficiary Aadhaar Offline XML QR steady inside the frame.'}
           </p>
         </div>
@@ -309,8 +315,8 @@ export function QrScannerModal({
         <div className="space-y-3">
           <p className="text-xs text-[var(--text-secondary)]">
             {lang === 'gu'
-              ? 'પરીક્ષણ માટે નીચેના સિન્થેટિક પંચમહાલ લાભાર્થી QR કોડમાંથી પસંદ કરો (અસલી XML QR જનરેટ અને પાર્સ થાય છે):'
-              : 'Select a synthetic Panchmahal beneficiary QR below (parses the embedded Aadhaar Offline XML locally):'}
+              ? 'પરીક્ષણ માટે નીચેના સિન્થેટિક પંચમહાલ લાભાર્થી QR કોડમાંથી પસંદ કરો:'
+              : 'Select a synthetic Panchmahal beneficiary QR below (parses the embedded XML locally):'}
           </p>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {SYNTHETIC_DEMO_QR_SAMPLES.map((sample) => (
@@ -343,7 +349,42 @@ export function QrScannerModal({
           </div>
         </div>
       )}
-    </ModalDialog>
+    </div>
   );
 }
 
+export function QrScannerModal({
+  open,
+  onClose,
+  onVerified,
+  centreSalt,
+  defaultMode = 'camera',
+}: {
+  open: boolean;
+  onClose: () => void;
+  onVerified: (cred: ParsedOfflineCredential) => void;
+  centreSalt?: string | null;
+  defaultMode?: 'camera' | 'upload' | 'demo';
+}) {
+  const { lang } = useI18n();
+
+  return (
+    <ModalDialog
+      open={open}
+      onClose={onClose}
+      title={lang === 'gu' ? 'આધાર ઓફલાઇન XML QR સ્કેનર' : 'Aadhaar Offline XML QR Scanner'}
+      subtitle={
+        lang === 'gu'
+          ? 'ફક્ત ઉપકરણ પર સ્થાનિક પ્રક્રિયા — કોઈ બાહ્ય API કે આધાર અંક સંગ્રહ નહીં'
+          : '100% local processing — never transmits raw XML or displays Aadhaar digits'
+      }
+    >
+      <QrScannerPanel
+        active={open}
+        onVerified={onVerified}
+        centreSalt={centreSalt}
+        defaultMode={defaultMode}
+      />
+    </ModalDialog>
+  );
+}

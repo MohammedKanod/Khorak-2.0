@@ -15,7 +15,7 @@ const DEMO_ACCOUNTS = [
 ];
 
 export function LoginPage() {
-  const { login } = useAuth();
+  const { login, isOnline } = useAuth();
   const { lang, setLang, t } = useI18n();
 
   const [username, setUsername] = useState('aww.vavdi');
@@ -77,6 +77,17 @@ export function LoginPage() {
                 ? 'તમારી ભૂમિકા અનુસાર સુરક્ષિત પ્રવેશ કરો.'
                 : 'Sign in with your role credentials for scoped supply-chain access.'}
             </p>
+
+            {!isOnline && (
+              <div
+                role="status"
+                className="mt-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-xs font-medium text-amber-900"
+              >
+                {lang === 'gu'
+                  ? 'ઉપકરણ ઓફલાઇન છે. પ્રથમ વખત લૉગિન કરવા માટે ઇન્ટરનેટ જરૂરી છે; અગાઉ લૉગિન કરેલ વપરાશકર્તા ઓફલાઇન ચાલુ રાખી શકે છે.'
+                  : 'Device appears offline. First-time sign-in requires an internet connection to authenticate your account.'}
+              </div>
+            )}
 
             {error && (
               <div

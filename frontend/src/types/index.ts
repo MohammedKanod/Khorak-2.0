@@ -32,6 +32,7 @@ export interface UserProfile {
     nameGu: string | null;
     code: string;
     location: string;
+    offlineCredentialSalt?: string | null;
     sector: {
       id: string;
       name: string;
@@ -106,7 +107,6 @@ export interface BeneficiaryReference {
   localReference: string;
   displayName: string;
   displayNameGu: string | null;
-  maskedIdLast4: string;
   yob?: string | null;
   beneficiaryCategory: string;
   protectedCredentialReference: string;
@@ -122,6 +122,7 @@ export interface DispatchRecord {
   id: string;
   supplierId: string;
   destinationCentreId: string;
+  stockRequestId?: string | null;
   dispatchReference: string;
   status: DispatchStatus;
   dispatchDate: string;
@@ -219,10 +220,115 @@ export interface DistributionRecord {
     localReference: string;
     displayName: string;
     displayNameGu: string | null;
-    maskedIdLast4: string;
   };
   product: { name: string; nameGu: string; unit: string };
   batch: { batchNumber: string; expiryDate?: string };
+}
+
+export type AppealStatus =
+  | 'DRAFT'
+  | 'SUBMITTED'
+  | 'AWAITING_SUPPLIER_RESPONSE'
+  | 'SUPPLIER_RESPONDED'
+  | 'UNDER_REVIEW'
+  | 'RESOLVED'
+  | 'REJECTED'
+  | 'ESCALATED';
+
+export interface DispatchAppealHistory {
+  id: string;
+  fromStatus: AppealStatus | null;
+  toStatus: AppealStatus;
+  action: string;
+  remarks: string | null;
+  evidenceUrl?: string | null;
+  createdAt: string;
+  actor?: { id: string; name: string; role: Role } | null;
+}
+
+export interface DispatchAppeal {
+  id: string;
+  appealReference: string;
+  discrepancyCaseId: string;
+  dispatchId: string;
+  supplierId: string;
+  centreId: string;
+  productId?: string | null;
+  batchId?: string | null;
+  dispatchedQuantity: number;
+  receivedQuantity: number;
+  damagedQuantity: number;
+  missingQuantity: number;
+  evidenceUrl?: string | null;
+  supplierEvidenceUrl?: string | null;
+  supervisorRemarks: string;
+  supplierRemarks?: string | null;
+  resolutionRemarks?: string | null;
+  status: AppealStatus;
+  createdAt: string;
+  updatedAt: string;
+  dispatch?: { id: string; dispatchReference: string; dispatchDate?: string };
+  discrepancyCase?: { id: string; difference: number; status: string };
+  supplier?: { id: string; name: string; code: string };
+  centre?: { id: string; name: string; nameGu?: string | null; code: string };
+  product?: { id: string; name: string; nameGu?: string | null; unit: string } | null;
+  batch?: { id: string; batchNumber: string } | null;
+  creator?: { id: string; name: string; role: Role } | null;
+  responder?: { id: string; name: string; role: Role } | null;
+  resolver?: { id: string; name: string; role: Role } | null;
+  history?: DispatchAppealHistory[];
+}
+
+export type StockRequestReason = 'LOW_STOCK' | 'EXPECTED_DEMAND' | 'DAMAGED_STOCK' | 'OTHER';
+
+export type StockRequestStatus =
+  | 'DRAFT'
+  | 'SUBMITTED'
+  | 'PENDING_APPROVAL'
+  | 'APPROVED'
+  | 'PARTIALLY_APPROVED'
+  | 'REJECTED'
+  | 'AWAITING_DISPATCH'
+  | 'DISPATCHED'
+  | 'RECEIVED'
+  | 'COMPLETED';
+
+export interface StockRequestHistory {
+  id: string;
+  fromStatus: StockRequestStatus | null;
+  toStatus: StockRequestStatus;
+  action: string;
+  remarks: string | null;
+  createdAt: string;
+  actor?: { id: string; name: string; role: Role } | null;
+}
+
+export interface StockRequest {
+  id: string;
+  requestNumber: string;
+  centreId: string;
+  productId: string;
+  requestedQuantity: number;
+  approvedQuantity?: number | null;
+  reason: StockRequestReason;
+  remarks?: string | null;
+  reviewRemarks?: string | null;
+  status: StockRequestStatus;
+  createdAt: string;
+  updatedAt: string;
+  reviewedAt?: string | null;
+  centre?: {
+    id: string;
+    name: string;
+    nameGu?: string | null;
+    code: string;
+    sector?: { name: string; block?: { name: string } };
+  };
+  product?: { id: string; name: string; nameGu?: string | null; unit: string; category: ProductCategory };
+  requester?: { id: string; name: string; role: Role } | null;
+  reviewer?: { id: string; name: string; role: Role } | null;
+  dispatches?: Array<{ id: string; dispatchReference: string; status: DispatchStatus; supplierId: string }>;
+  history?: StockRequestHistory[];
 }
 
 export interface SpoilageRecord {

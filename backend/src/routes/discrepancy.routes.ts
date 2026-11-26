@@ -18,6 +18,7 @@ import {
 } from '../middleware/auth';
 import { recordAuditLog } from '../lib/audit';
 import { refreshCentreAlerts } from '../services/alert.service';
+import { acquireStockLock, getCentreBatchBalances } from '../services/ledger.service';
 import { roundQty } from '../lib/math';
 
 export const discrepancyRouter = Router();
@@ -294,6 +295,19 @@ async function handleApprovalDecision(
       });
 
       if (decision === 'APPROVED') {
+        await acquireStockLock(tx, report.centreId, report.productId);
+        const batches = await getCentreBatchBalances(report.centreId, tx, {
+          productId: report.productId,
+          includeZero: true,
+        });
+        const targetBatch = batches.find((b) => b.batchId === report.batchId);
+        if (!targetBatch || targetBatch.balance < roundQty(report.quantity)) {
+          throw new AppError(
+            409,
+            'INSUFFICIENT_STOCK',
+            `Cannot approve spoilage of ${report.quantity}; current batch balance is ${targetBatch?.balance ?? 0}`
+          );
+        }
         await tx.stockLedgerEvent.create({
           data: {
             centreId: report.centreId,
@@ -346,6 +360,18 @@ async function handleApprovalDecision(
     }
 
     const updated = await prisma.$transaction(async (tx) => {
+      if (decision === 'APPROVED' && recon.variance !== 0) {
+        await acquireStockLock(tx, recon.centreId, recon.productId);
+        const lockedBatches = await getCentreBatchBalances(recon.centreId, tx, {
+          productId: recon.productId,
+          includeZero: true,
+        });
+        const lockedTarget = lockedBatches.find((b) => b.batchId === recon.batchId);
+        if (!lockedTarget || roundQty(lockedTarget.balance + recon.variance) < 0) {
+          throw new AppError(409, 'NEGATIVE_STOCK_PREVENTED', 'Reconciliation adjustment would drive batch balance negative');
+        }
+      }
+
       const row = await tx.reconciliation.update({
         where: { id: recon.id },
         data: {

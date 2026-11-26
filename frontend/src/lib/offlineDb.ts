@@ -7,12 +7,21 @@ import {
   OutboxStatus,
   Product,
   ProductInventorySummary,
+  StockRequest,
 } from '../types';
-import { apiRequest } from './api';
+import { apiRequest, apiUrl } from './api';
+
+export type OfflineOperationType =
+  | 'CREATE_BENEFICIARY'
+  | 'DISTRIBUTION'
+  | 'CONSUMPTION'
+  | 'SPOILAGE'
+  | 'RECEIVE_DISPATCH'
+  | 'CREATE_STOCK_REQUEST';
 
 export interface OutboxRecord {
   operationUuid: string;
-  operationType: 'DISTRIBUTION' | 'CONSUMPTION' | 'SPOILAGE' | 'RECEIVE_DISPATCH';
+  operationType: OfflineOperationType;
   centreId: string;
   userId: string;
   summaryLabel: string;
@@ -28,12 +37,14 @@ export interface OutboxRecord {
 export interface CachedCentreSnapshot {
   centreId: string;
   syncedAt: string;
+  offlineCredentialSalt?: string | null;
   products: Product[];
   inventorySummary: ProductInventorySummary[];
   pendingDispatches: DispatchRecord[];
   beneficiaries: BeneficiaryReference[];
   recentDistributions: DistributionRecord[];
   alerts: AlertItem[];
+  stockRequests?: StockRequest[];
 }
 
 class KhorakOfflineDatabase extends Dexie {
@@ -51,20 +62,45 @@ class KhorakOfflineDatabase extends Dexie {
 
 export const offlineDb = new KhorakOfflineDatabase();
 
+export async function checkServerConnectivity(timeoutMs = 3500): Promise<boolean> {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    return false;
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(apiUrl('/api/health'), {
+      method: 'GET',
+      cache: 'no-store',
+      signal: controller.signal,
+    });
+    return res.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function pullCentreSnapshot(centreId: string): Promise<CachedCentreSnapshot | null> {
   try {
-    const res = await apiRequest<{ success: boolean; data: Omit<CachedCentreSnapshot, 'centreId'> & { centre: { id: string } } }>(
-      `/api/sync/pull?centreId=${encodeURIComponent(centreId)}`
-    );
+    const res = await apiRequest<{
+      success: boolean;
+      data: Omit<CachedCentreSnapshot, 'centreId'> & {
+        centre: { id: string; offlineCredentialSalt?: string | null };
+      };
+    }>(`/api/sync/pull?centreId=${encodeURIComponent(centreId)}`);
     const snapshot: CachedCentreSnapshot = {
       centreId,
       syncedAt: res.data.syncedAt,
+      offlineCredentialSalt: res.data.centre?.offlineCredentialSalt ?? null,
       products: res.data.products,
       inventorySummary: res.data.inventorySummary,
       pendingDispatches: res.data.pendingDispatches,
       beneficiaries: res.data.beneficiaries,
       recentDistributions: res.data.recentDistributions,
       alerts: res.data.alerts,
+      stockRequests: res.data.stockRequests ?? [],
     };
     await offlineDb.snapshots.put(snapshot);
     return snapshot;

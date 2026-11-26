@@ -25,18 +25,32 @@
 - `POST /api/discrepancies/:id/review` — Supervisor/CDPO action (`APPROVE`, `REQUEST_RECOUNT`, `REJECT`, `RESOLVE`) with mandatory `remarks`.
 - `POST /api/approvals/:id/approve` & `POST /api/approvals/:id/reject` — Unified approval handler for `SPOILAGE`, `RECONCILIATION`, and `DISCREPANCY`.
 
-## Beneficiary Offline QR & Distribution
-- `GET /api/beneficiaries` — Scoped authorised `BeneficiaryReference` rows (no raw Aadhaar numbers).
-- `POST /api/beneficiaries/verify-offline-credential` — Matches locally hashed `protectedCredentialReference`.
-- `POST /api/distributions` — Records handover using FEFO, blocks expired/quarantined batches, enforces `idempotencyKey` and same-day duplicate ration protection.
+## Supervisor → Supplier Dispatch Appeals
+- `POST /api/appeals` — Supervisor/CDPO raises formal appeal against a discrepancy case (supports optional multipart evidence).
+- `GET /api/appeals` & `GET /api/appeals/:id` — Role-scoped appeals with full status timeline (`DispatchAppealHistory`).
+- `POST /api/appeals/:id/submit` — Transitions `DRAFT`/`SUBMITTED` appeal to `AWAITING_SUPPLIER_RESPONSE`.
+- `POST /api/appeals/:id/respond` — Owning Supplier responds with explanation and optional evidence (`SUPPLIER_RESPONDED`). Enforces supplier ownership (`403 SUPPLIER_OWNERSHIP_FORBIDDEN`).
+- `POST /api/appeals/:id/review` — Supervisor/CDPO/DPO/DDO updates status (`UNDER_REVIEW`, `RESOLVED`, `REJECTED`, `ESCALATED`).
+
+## AWW → Supervisor → Supplier Stock Requests
+- `POST /api/stock-requests` — AWW/AWH submits stock replenishment request (`LOW_STOCK`, `EXPECTED_DEMAND`, `DAMAGED_STOCK`, `OTHER`, `idempotencyKey`).
+- `GET /api/stock-requests` & `GET /api/stock-requests/:id` — Scoped request status, history, and linked dispatches.
+- `POST /api/stock-requests/:id/review` — Supervisor/CDPO/DPO/DDO (`APPROVE`, `PARTIAL_APPROVE`, `REJECT`). Self-approval blocked; approval authorizes dispatch without altering ledger stock.
+- `POST /api/dispatches` accepts optional `stockRequestId` to link supplier dispatch and advance the request through `DISPATCHED` → `RECEIVED` / `COMPLETED`.
+
+## Beneficiary Offline QR & Multi-Item Distribution
+- `GET /api/beneficiaries` — Scoped authorised `BeneficiaryReference` rows (zero raw or masked Aadhaar digits stored or returned).
+- `POST /api/beneficiaries` — Registers beneficiary via QR-derived `protectedCredentialReference` (per-centre HMAC-SHA256) or manual fallback (`PENDING_APPROVAL` for AWW).
+- `POST /api/beneficiaries/verify-offline-credential` — Matches locally HMAC-hashed `protectedCredentialReference`.
+- `POST /api/distributions` — Atomic single-item or multi-item (`items: [...]`) handover using FEFO and PostgreSQL advisory locks (`pg_advisory_xact_lock`), blocks expired/quarantined batches, enforces `idempotencyKey` and DB-level same-day duplicate ration protection (`409 DUPLICATE_DISTRIBUTION`).
 
 ## Alerts, Dashboards & Offline Sync
 - `GET /api/alerts` — Scoped reorder (`WARNING` 4–7d, `CRITICAL` 1–3d, `STOCKOUT` 0d), expiry, pending delivery, and discrepancy alerts.
-- `GET /api/dashboard/centre` | `/api/dashboard/block` | `/api/dashboard/district` — Role-enforced dashboards (`AWW` receives `403` on `/api/dashboard/district`).
+- `GET /api/dashboard/centre` | `/api/dashboard/block` | `/api/dashboard/district` | `/api/dashboard/admin-bundle` — Role-enforced dashboards (`AWW` receives `403` on `/api/dashboard/district`).
 - `GET /api/analytics/inventory` | `distribution` | `suppliers` | `nutrition`
-- `POST /api/sync/push` — Idempotent outbox batch processor (`SYNCED`, `CONFLICT`, `FAILED`).
-- `GET /api/sync/pull` — Centre offline snapshot for Dexie.js IndexedDB caching.
-- `GET /health` — PostgreSQL connectivity health check.
+- `POST /api/sync/push` — Idempotent outbox batch processor supporting `CREATE_BENEFICIARY`, `DISTRIBUTION` (single & multi-item), `CONSUMPTION`, `SPOILAGE`, `RECEIVE_DISPATCH`, and `CREATE_STOCK_REQUEST`.
+- `GET /api/sync/pull` — Centre offline snapshot (including `offlineCredentialSalt` and `stockRequests`) for Dexie.js IndexedDB caching.
+- `GET /health` & `GET /api/health` — PostgreSQL connectivity & client reachability health check.
 
 ---
 

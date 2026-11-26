@@ -8,6 +8,7 @@ import {
   LedgerEventType,
   Prisma,
   Role,
+  StockRequestStatus,
 } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { AppError } from '../lib/errors';
@@ -20,6 +21,7 @@ import {
 import { evidenceUpload } from '../middleware/upload';
 import { recordAuditLog } from '../lib/audit';
 import { refreshCentreAlerts } from '../services/alert.service';
+import { acquireStockLock } from '../services/ledger.service';
 import { roundQty } from '../lib/math';
 
 export const dispatchRouter = Router();
@@ -66,6 +68,7 @@ const dispatchItemInputSchema = z.object({
 const createDispatchSchema = z.object({
   supplierId: z.string().uuid().optional(),
   destinationCentreId: z.string().uuid(),
+  stockRequestId: z.string().uuid().optional(),
   dispatchDate: z.string().optional(),
   status: z.enum(['DRAFT', 'DISPATCHED']).default('DISPATCHED'),
   notes: z.string().max(400).optional(),
@@ -88,6 +91,19 @@ dispatchRouter.post(
   async (req, res, next) => {
     try {
       const parsed = createDispatchSchema.parse(req.body);
+
+      if (
+        req.user!.role === Role.SUPPLIER &&
+        parsed.supplierId &&
+        parsed.supplierId !== req.user!.supplierId
+      ) {
+        throw new AppError(
+          403,
+          'SUPPLIER_OWNERSHIP_FORBIDDEN',
+          'Supplier cannot create dispatches on behalf of another supplier'
+        );
+      }
+
       const supplierId =
         req.user!.role === Role.SUPPLIER
           ? req.user!.supplierId
@@ -107,6 +123,31 @@ dispatchRouter.post(
       }
       if (!centre) {
         throw new AppError(404, 'CENTRE_NOT_FOUND', 'Destination Anganwadi Centre not found');
+      }
+
+      if (parsed.stockRequestId) {
+        const stockReq = await prisma.stockRequest.findUnique({
+          where: { id: parsed.stockRequestId },
+        });
+        if (!stockReq || stockReq.centreId !== parsed.destinationCentreId) {
+          throw new AppError(
+            400,
+            'INVALID_STOCK_REQUEST',
+            'Stock request does not match the destination centre'
+          );
+        }
+        const dispatchableStatuses: StockRequestStatus[] = [
+          StockRequestStatus.APPROVED,
+          StockRequestStatus.PARTIALLY_APPROVED,
+          StockRequestStatus.AWAITING_DISPATCH,
+        ];
+        if (!dispatchableStatuses.includes(stockReq.status)) {
+          throw new AppError(
+            400,
+            'STOCK_REQUEST_NOT_APPROVED',
+            `Stock request in status ${stockReq.status} cannot be dispatched`
+          );
+        }
       }
 
       const productIds = Array.from(new Set(parsed.items.map((i) => i.productId)));
@@ -166,6 +207,7 @@ dispatchRouter.post(
           data: {
             supplierId,
             destinationCentreId: parsed.destinationCentreId,
+            stockRequestId: parsed.stockRequestId ?? null,
             dispatchReference,
             status: parsed.status as DispatchStatus,
             dispatchDate: parsed.dispatchDate ? new Date(parsed.dispatchDate) : new Date(),
@@ -186,6 +228,29 @@ dispatchRouter.post(
             },
           },
         });
+
+        if (parsed.stockRequestId && parsed.status === 'DISPATCHED') {
+          const prevReq = await tx.stockRequest.findUnique({
+            where: { id: parsed.stockRequestId },
+          });
+          if (prevReq) {
+            await tx.stockRequest.update({
+              where: { id: parsed.stockRequestId },
+              data: {
+                status: StockRequestStatus.DISPATCHED,
+                history: {
+                  create: {
+                    actorId: req.user!.id,
+                    fromStatus: prevReq.status,
+                    toStatus: StockRequestStatus.DISPATCHED,
+                    action: 'DISPATCH_CREATED',
+                    remarks: `Linked to dispatch ${created.dispatchReference}`,
+                  },
+                },
+              },
+            });
+          }
+        }
 
         await recordAuditLog(tx, {
           actorId: req.user!.id,
@@ -418,6 +483,34 @@ dispatchRouter.post(
         missingQuantity: number;
       }> = [];
 
+      // Validate strict 1-to-1 line matching: reject extra, duplicate, or unknown product/batch lines
+      const seenKeys = new Set<string>();
+      for (const item of parsed.items) {
+        const key = `${item.productId}:${item.batchId}`;
+        if (seenKeys.has(key)) {
+          throw new AppError(400, 'DUPLICATE_RECEIPT_LINE', 'Duplicate product/batch line in receipt');
+        }
+        seenKeys.add(key);
+        const existsOnDispatch = dispatch.items.some(
+          (d) => d.productId === item.productId && d.batchId === item.batchId
+        );
+        if (!existsOnDispatch) {
+          throw new AppError(
+            400,
+            'INVALID_RECEIPT_LINE',
+            'Receipt line product or batch does not match this dispatch'
+          );
+        }
+      }
+
+      if (parsed.items.length !== dispatch.items.length) {
+        throw new AppError(
+          400,
+          'MISSING_ITEM_RECEIPT',
+          'Receipt must include every line item from the dispatch'
+        );
+      }
+
       for (const dItem of dispatch.items) {
         const matched = parsed.items.find(
           (i) => i.productId === dItem.productId && i.batchId === dItem.batchId
@@ -437,6 +530,10 @@ dispatchRouter.post(
           matched.missingQuantity !== undefined
             ? roundQty(matched.missingQuantity)
             : roundQty(Math.max(0, expected - accepted - damaged));
+
+        if (accepted < 0 || damaged < 0 || computedMissing < 0) {
+          throw new AppError(400, 'INVALID_QUANTITY', 'Quantities cannot be negative');
+        }
 
         if (roundQty(accepted + damaged + computedMissing) !== expected) {
           throw new AppError(
@@ -487,6 +584,7 @@ dispatchRouter.post(
         for (let idx = 0; idx < receiptItemsData.length; idx++) {
           const item = receiptItemsData[idx];
           if (item.acceptedQuantity > 0) {
+            await acquireStockLock(tx, dispatch.destinationCentreId, item.productId);
             await tx.stockLedgerEvent.create({
               data: {
                 centreId: dispatch.destinationCentreId,
@@ -526,6 +624,32 @@ dispatchRouter.post(
             status: hasDiscrepancy ? DispatchStatus.DISCREPANCY : DispatchStatus.DELIVERED,
           },
         });
+
+        if (dispatch.stockRequestId) {
+          const linkedReq = await tx.stockRequest.findUnique({
+            where: { id: dispatch.stockRequestId },
+          });
+          if (linkedReq) {
+            const targetReqStatus = hasDiscrepancy
+              ? StockRequestStatus.RECEIVED
+              : StockRequestStatus.COMPLETED;
+            await tx.stockRequest.update({
+              where: { id: linkedReq.id },
+              data: {
+                status: targetReqStatus,
+                history: {
+                  create: {
+                    actorId: req.user!.id,
+                    fromStatus: linkedReq.status,
+                    toStatus: targetReqStatus,
+                    action: 'DELIVERY_RECEIVED',
+                    remarks: `Received ${totalAccepted}/${totalExpected} under ${dispatch.dispatchReference}`,
+                  },
+                },
+              },
+            });
+          }
+        }
 
         await recordAuditLog(tx, {
           actorId: req.user!.id,

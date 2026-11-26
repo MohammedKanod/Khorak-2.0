@@ -16,7 +16,7 @@ import {
   requireAuth,
   requireRoles,
 } from '../middleware/auth';
-import { allocateFefoBatches } from '../services/ledger.service';
+import { acquireStockLock, allocateFefoBatches } from '../services/ledger.service';
 import { refreshCentreAlerts } from '../services/alert.service';
 import { recordAuditLog } from '../lib/audit';
 import { formatIstDate, roundQty } from '../lib/math';
@@ -27,11 +27,23 @@ export const beneficiaryRouter = Router();
 distributionRouter.use(requireAuth);
 beneficiaryRouter.use(requireAuth);
 
-function computeProtectedCredentialRef(last4: string, name: string, yob: string): string {
-  const normalizedName = name.trim().toLowerCase().replace(/\s+/g, ' ');
-  const raw = `khorak-uidai-offline-v1|${last4.trim()}|${normalizedName}|${yob.trim()}`;
-  return crypto.createHash('sha256').update(raw).digest('hex');
-}
+const beneficiaryPublicSelect = {
+  id: true,
+  centreId: true,
+  localReference: true,
+  displayName: true,
+  displayNameGu: true,
+  yob: true,
+  beneficiaryCategory: true,
+  protectedCredentialReference: true,
+  status: true,
+  reviewRemarks: true,
+  reviewedAt: true,
+  createdAt: true,
+  centre: { select: { id: true, name: true, nameGu: true, code: true } },
+  requester: { select: { id: true, name: true, role: true } },
+  reviewer: { select: { id: true, name: true, role: true } },
+} as const;
 
 beneficiaryRouter.get('/', async (req, res, next) => {
   try {
@@ -56,24 +68,7 @@ beneficiaryRouter.get('/', async (req, res, next) => {
 
     const beneficiaries = await prisma.beneficiaryReference.findMany({
       where,
-      select: {
-        id: true,
-        centreId: true,
-        localReference: true,
-        displayName: true,
-        displayNameGu: true,
-        maskedIdLast4: true,
-        yob: true,
-        beneficiaryCategory: true,
-        protectedCredentialReference: true,
-        status: true,
-        reviewRemarks: true,
-        reviewedAt: true,
-        createdAt: true,
-        centre: { select: { id: true, name: true, nameGu: true, code: true } },
-        requester: { select: { id: true, name: true, role: true } },
-        reviewer: { select: { id: true, name: true, role: true } },
-      },
+      select: beneficiaryPublicSelect,
       orderBy: [{ status: 'asc' }, { createdAt: 'desc' }],
     });
 
@@ -88,7 +83,6 @@ const createBeneficiarySchema = z.object({
   localReference: z.string().min(3).max(40).trim().optional(),
   displayName: z.string().min(2).max(120).trim(),
   displayNameGu: z.string().max(120).trim().optional(),
-  maskedIdLast4: z.string().regex(/^\d{4}$/, 'Enter exactly the last 4 digits only'),
   yob: z.string().regex(/^(19|20)\d{2}$/, 'Enter 4-digit birth year (YYYY)'),
   beneficiaryCategory: z.enum([
     'PREGNANT_WOMAN',
@@ -97,7 +91,115 @@ const createBeneficiarySchema = z.object({
     'CHILD_3Y_6Y',
     'ADOLESCENT_GIRL',
   ]),
+  protectedCredentialReference: z.string().min(32).max(128).optional(),
+  idempotencyKey: z.string().min(8).max(120).optional(),
 });
+
+export async function executeCreateBeneficiary(params: {
+  userId: string;
+  userRole: Role;
+  centreId: string;
+  localReference?: string;
+  displayName: string;
+  displayNameGu?: string;
+  yob: string;
+  beneficiaryCategory: BeneficiaryCategory;
+  protectedCredentialReference?: string;
+  idempotencyKey?: string;
+}) {
+  if (params.idempotencyKey) {
+    const existingByKey = await prisma.beneficiaryReference.findUnique({
+      where: { idempotencyKey: params.idempotencyKey },
+      select: beneficiaryPublicSelect,
+    });
+    if (existingByKey) {
+      return { beneficiary: existingByKey, deduplicated: true };
+    }
+  }
+
+  const centre = await prisma.anganwadiCentre.findUnique({
+    where: { id: params.centreId },
+    select: { id: true, code: true },
+  });
+  if (!centre) {
+    throw new AppError(404, 'CENTRE_NOT_FOUND', 'Anganwadi Centre not found');
+  }
+
+  // Opaque credential reference: either locally HMAC-derived from offline QR
+  // or opaque random token for manual registration (never stores Aadhaar digits)
+  const credRef =
+    params.protectedCredentialReference ||
+    `manual-${crypto.randomBytes(24).toString('hex')}`;
+
+  const duplicate = await prisma.beneficiaryReference.findFirst({
+    where: {
+      OR: [
+        { protectedCredentialReference: credRef },
+        {
+          centreId: params.centreId,
+          displayName: { equals: params.displayName, mode: 'insensitive' },
+          yob: params.yob,
+          isActive: true,
+        },
+      ],
+    },
+  });
+
+  if (duplicate) {
+    throw new AppError(
+      409,
+      'BENEFICIARY_EXISTS',
+      'This beneficiary is already registered at this centre'
+    );
+  }
+
+  const localReference =
+    params.localReference ||
+    `BEN-${centre.code.replace('AWC-', '')}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
+
+  const autoApprove =
+    params.userRole === Role.SUPERVISOR || params.userRole === Role.CDPO;
+
+  const created = await prisma.$transaction(async (tx) => {
+    const row = await tx.beneficiaryReference.create({
+      data: {
+        centreId: params.centreId,
+        localReference,
+        displayName: params.displayName,
+        displayNameGu: params.displayNameGu || null,
+        maskedIdLast4: null,
+        yob: params.yob,
+        beneficiaryCategory: params.beneficiaryCategory,
+        protectedCredentialReference: credRef,
+        status: autoApprove
+          ? BeneficiaryStatus.APPROVED
+          : BeneficiaryStatus.PENDING_APPROVAL,
+        requestedBy: params.userId,
+        reviewedBy: autoApprove ? params.userId : null,
+        reviewRemarks: autoApprove ? 'Added and approved by authorised officer' : null,
+        reviewedAt: autoApprove ? new Date() : null,
+        idempotencyKey: params.idempotencyKey || null,
+      },
+      select: beneficiaryPublicSelect,
+    });
+
+    await recordAuditLog(tx, {
+      actorId: params.userId,
+      action: autoApprove ? 'BENEFICIARY_APPROVED' : 'BENEFICIARY_REQUESTED',
+      entityType: 'BeneficiaryReference',
+      entityId: row.id,
+      afterState: {
+        localReference: row.localReference,
+        displayName: row.displayName,
+        status: row.status,
+      },
+    });
+
+    return row;
+  });
+
+  return { beneficiary: created, deduplicated: false };
+}
 
 beneficiaryRouter.post(
   '/',
@@ -110,72 +212,25 @@ beneficiaryRouter.post(
         throw new AppError(400, 'CENTRE_REQUIRED', 'centreId is required');
       }
 
-      const centre = await assertCentreInScope(req.user!, centreId);
-      const protectedCredentialReference = computeProtectedCredentialRef(
-        parsed.maskedIdLast4,
-        parsed.displayName,
-        parsed.yob
-      );
-
-      const existingCred = await prisma.beneficiaryReference.findUnique({
-        where: { protectedCredentialReference },
-      });
-      if (existingCred) {
-        throw new AppError(
-          409,
-          'BENEFICIARY_EXISTS',
-          'A beneficiary reference with these credential details already exists'
-        );
-      }
-
-      const localReference =
-        parsed.localReference ||
-        `BEN-${centre.code.replace('AWC-', '')}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
-
-      const autoApprove =
-        req.user!.role === Role.SUPERVISOR || req.user!.role === Role.CDPO;
-
-      const created = await prisma.$transaction(async (tx) => {
-        const row = await tx.beneficiaryReference.create({
-          data: {
-            centreId,
-            localReference,
-            displayName: parsed.displayName,
-            displayNameGu: parsed.displayNameGu || null,
-            maskedIdLast4: parsed.maskedIdLast4,
-            yob: parsed.yob,
-            beneficiaryCategory: parsed.beneficiaryCategory as BeneficiaryCategory,
-            protectedCredentialReference,
-            status: autoApprove
-              ? BeneficiaryStatus.APPROVED
-              : BeneficiaryStatus.PENDING_APPROVAL,
-            requestedBy: req.user!.id,
-            reviewedBy: autoApprove ? req.user!.id : null,
-            reviewRemarks: autoApprove ? 'Added and approved by authorised officer' : null,
-            reviewedAt: autoApprove ? new Date() : null,
-          },
-          include: {
-            centre: { select: { id: true, name: true, nameGu: true, code: true } },
-            requester: { select: { id: true, name: true, role: true } },
-          },
-        });
-
-        await recordAuditLog(tx, {
-          actorId: req.user!.id,
-          action: autoApprove ? 'BENEFICIARY_APPROVED' : 'BENEFICIARY_REQUESTED',
-          entityType: 'BeneficiaryReference',
-          entityId: row.id,
-          afterState: {
-            localReference: row.localReference,
-            displayName: row.displayName,
-            status: row.status,
-          },
-        });
-
-        return row;
+      await assertCentreInScope(req.user!, centreId);
+      const result = await executeCreateBeneficiary({
+        userId: req.user!.id,
+        userRole: req.user!.role,
+        centreId,
+        localReference: parsed.localReference,
+        displayName: parsed.displayName,
+        displayNameGu: parsed.displayNameGu,
+        yob: parsed.yob,
+        beneficiaryCategory: parsed.beneficiaryCategory as BeneficiaryCategory,
+        protectedCredentialReference: parsed.protectedCredentialReference,
+        idempotencyKey: parsed.idempotencyKey,
       });
 
-      res.status(201).json({ success: true, data: created });
+      res.status(result.deduplicated ? 200 : 201).json({
+        success: true,
+        data: result.beneficiary,
+        deduplicated: result.deduplicated,
+      });
     } catch (err) {
       next(err);
     }
@@ -216,11 +271,7 @@ beneficiaryRouter.post(
             reviewRemarks: parsed.remarks,
             reviewedAt: new Date(),
           },
-          include: {
-            centre: { select: { id: true, name: true, code: true } },
-            requester: { select: { id: true, name: true, role: true } },
-            reviewer: { select: { id: true, name: true, role: true } },
-          },
+          select: beneficiaryPublicSelect,
         });
 
         await tx.approval.create({
@@ -257,7 +308,6 @@ const verifyOfflineSchema = z.object({
   centreId: z.string().uuid().optional(),
   protectedCredentialReference: z.string().min(16).max(128).optional(),
   localReference: z.string().min(2).max(60).optional(),
-  maskedIdLast4: z.string().regex(/^\d{4}$/).optional(),
 });
 
 beneficiaryRouter.post(
@@ -287,24 +337,9 @@ beneficiaryRouter.post(
           isActive: true,
           ...(parsed.protectedCredentialReference
             ? { protectedCredentialReference: parsed.protectedCredentialReference }
-            : {
-                localReference: parsed.localReference,
-                ...(parsed.maskedIdLast4 ? { maskedIdLast4: parsed.maskedIdLast4 } : {}),
-              }),
+            : { localReference: parsed.localReference }),
         },
-        select: {
-          id: true,
-          centreId: true,
-          localReference: true,
-          displayName: true,
-          displayNameGu: true,
-          maskedIdLast4: true,
-          yob: true,
-          beneficiaryCategory: true,
-          protectedCredentialReference: true,
-          status: true,
-          reviewRemarks: true,
-        },
+        select: beneficiaryPublicSelect,
       });
 
       if (!beneficiary) {
@@ -355,30 +390,56 @@ beneficiaryRouter.post(
   }
 );
 
-const createDistributionSchema = z.object({
-  centreId: z.string().uuid().optional(),
-  beneficiaryReferenceId: z.string().uuid(),
+const distributionLineItemSchema = z.object({
   productId: z.string().uuid(),
   batchId: z.string().uuid().optional(),
   quantity: z.coerce.number().positive(),
-  distributedAt: z.string().optional(),
-  idempotencyKey: z.string().min(8).max(120).optional(),
-  remarks: z.string().max(300).optional(),
 });
 
-export async function executeDistribution(params: {
+const createDistributionSchema = z
+  .object({
+    centreId: z.string().uuid().optional(),
+    beneficiaryReferenceId: z.string().uuid(),
+    productId: z.string().uuid().optional(),
+    batchId: z.string().uuid().optional(),
+    quantity: z.coerce.number().positive().optional(),
+    items: z.array(distributionLineItemSchema).min(1).optional(),
+    distributedAt: z.string().optional(),
+    idempotencyKey: z.string().min(8).max(120).optional(),
+    remarks: z.string().max(300).optional(),
+  })
+  .refine(
+    (d) =>
+      (Array.isArray(d.items) && d.items.length > 0) ||
+      (Boolean(d.productId) && d.quantity !== undefined),
+    { message: 'Provide either items[] or productId + quantity' }
+  );
+
+export async function executeMultiDistribution(params: {
   userId: string;
   centreId: string;
   beneficiaryReferenceId: string;
-  productId: string;
-  batchId?: string;
-  quantity: number;
+  items: Array<{ productId: string; batchId?: string; quantity: number }>;
   distributedAt?: Date;
   idempotencyKey: string;
   remarks?: string;
 }) {
-  const existingByKey = await prisma.distribution.findUnique({
-    where: { idempotencyKey: params.idempotencyKey },
+  // Reject duplicate productId within the same distribution submission
+  const productSet = new Set<string>();
+  for (const item of params.items) {
+    if (productSet.has(item.productId)) {
+      throw new AppError(400, 'DUPLICATE_PRODUCT_IN_REQUEST', 'Duplicate product in distribution items');
+    }
+    productSet.add(item.productId);
+  }
+
+  const keyMatches = await prisma.distribution.findMany({
+    where: {
+      OR: [
+        { idempotencyKey: params.idempotencyKey },
+        { idempotencyKey: { startsWith: `${params.idempotencyKey}-item-` } },
+      ],
+    },
     include: {
       beneficiary: {
         select: {
@@ -386,7 +447,6 @@ export async function executeDistribution(params: {
           localReference: true,
           displayName: true,
           displayNameGu: true,
-          maskedIdLast4: true,
         },
       },
       product: { select: { id: true, name: true, nameGu: true, unit: true } },
@@ -394,21 +454,21 @@ export async function executeDistribution(params: {
     },
   });
 
-  if (existingByKey) {
-    return { distribution: existingByKey, deduplicated: true };
+  if (keyMatches.length > 0) {
+    return {
+      distributions: keyMatches,
+      distribution: keyMatches[0],
+      deduplicated: true,
+    };
   }
 
-  const [beneficiary, product] = await Promise.all([
-    prisma.beneficiaryReference.findFirst({
-      where: {
-        id: params.beneficiaryReferenceId,
-        centreId: params.centreId,
-        isActive: true,
-      },
-    }),
-    prisma.product.findUnique({ where: { id: params.productId } }),
-  ]);
-
+  const beneficiary = await prisma.beneficiaryReference.findFirst({
+    where: {
+      id: params.beneficiaryReferenceId,
+      centreId: params.centreId,
+      isActive: true,
+    },
+  });
   if (!beneficiary) {
     throw new AppError(
       404,
@@ -423,111 +483,185 @@ export async function executeDistribution(params: {
       'Beneficiary must be approved by Mukhya Sevika (Supervisor) before distribution'
     );
   }
-  if (!product || !product.isActive) {
-    throw new AppError(404, 'PRODUCT_NOT_FOUND', 'Product not found or inactive');
+
+  const products = await prisma.product.findMany({
+    where: { id: { in: Array.from(productSet) }, isActive: true },
+  });
+  if (products.length !== productSet.size) {
+    throw new AppError(404, 'PRODUCT_NOT_FOUND', 'One or more products not found or inactive');
   }
+  const productMap = new Map(products.map((p) => [p.id, p]));
 
   const distTime = params.distributedAt || new Date();
   const distributionDay = formatIstDate(distTime);
 
-  const duplicateToday = await prisma.distribution.findFirst({
-    where: {
-      centreId: params.centreId,
-      beneficiaryReferenceId: params.beneficiaryReferenceId,
-      productId: params.productId,
-      distributionDay,
-    },
-  });
+  let createdList;
+  try {
+    createdList = await prisma.$transaction(async (tx) => {
+      const results = [];
 
-  if (duplicateToday) {
-    throw new AppError(
-      409,
-      'DUPLICATE_DISTRIBUTION',
-      `${beneficiary.displayName} has already received ${product.name} on ${distributionDay}`
-    );
-  }
+      // Deterministic lock ordering by productId prevents deadlocks under concurrency
+      const sortedItems = [...params.items].sort((a, b) =>
+        a.productId.localeCompare(b.productId)
+      );
 
-  const created = await prisma.$transaction(
-    async (tx) => {
-      const allocations = await allocateFefoBatches(tx, {
-        centreId: params.centreId,
-        productId: params.productId,
-        quantity: params.quantity,
-        preferredBatchId: params.batchId,
-      });
+      for (let itemIdx = 0; itemIdx < sortedItems.length; itemIdx++) {
+        const line = sortedItems[itemIdx];
+        const product = productMap.get(line.productId)!;
 
-      const primaryAlloc = allocations[0];
-      const distribution = await tx.distribution.create({
-        data: {
+        await acquireStockLock(tx, params.centreId, line.productId);
+
+        const allocations = await allocateFefoBatches(tx, {
           centreId: params.centreId,
-          beneficiaryReferenceId: params.beneficiaryReferenceId,
-          productId: params.productId,
-          batchId: primaryAlloc.batchId,
-          quantity: roundQty(params.quantity),
-          distributedBy: params.userId,
-          distributedAt: distTime,
-          distributionDay,
-          idempotencyKey: params.idempotencyKey,
-          remarks: params.remarks,
-        },
-        include: {
-          beneficiary: {
-            select: {
-              id: true,
-              localReference: true,
-              displayName: true,
-              displayNameGu: true,
-              maskedIdLast4: true,
-              beneficiaryCategory: true,
-            },
-          },
-          product: { select: { id: true, name: true, nameGu: true, unit: true } },
-          batch: { select: { id: true, batchNumber: true, expiryDate: true } },
-        },
-      });
+          productId: line.productId,
+          quantity: line.quantity,
+          preferredBatchId: line.batchId,
+        });
 
-      for (let idx = 0; idx < allocations.length; idx++) {
-        const alloc = allocations[idx];
-        await tx.stockLedgerEvent.create({
+        const itemIdempKey =
+          sortedItems.length === 1
+            ? params.idempotencyKey
+            : `${params.idempotencyKey}-item-${itemIdx}`;
+
+        const primaryAlloc = allocations[0];
+        const distribution = await tx.distribution.create({
           data: {
             centreId: params.centreId,
-            productId: params.productId,
-            batchId: alloc.batchId,
-            eventType: LedgerEventType.DISTRIBUTED,
-            quantity: alloc.quantity,
-            referenceId: distribution.id,
-            referenceType: 'DISTRIBUTION',
-            remarks: `Distributed to ${beneficiary.localReference} (batch ${alloc.batchNumber})`,
-            idempotencyKey:
-              allocations.length === 1
-                ? `dist-led-${params.idempotencyKey}`
-                : `dist-led-${params.idempotencyKey}-${idx}`,
-            createdBy: params.userId,
+            beneficiaryReferenceId: params.beneficiaryReferenceId,
+            productId: line.productId,
+            batchId: primaryAlloc.batchId,
+            quantity: roundQty(line.quantity),
+            distributedBy: params.userId,
+            distributedAt: distTime,
+            distributionDay,
+            idempotencyKey: itemIdempKey,
+            remarks: params.remarks,
+          },
+          include: {
+            beneficiary: {
+              select: {
+                id: true,
+                localReference: true,
+                displayName: true,
+                displayNameGu: true,
+                beneficiaryCategory: true,
+              },
+            },
+            product: { select: { id: true, name: true, nameGu: true, unit: true } },
+            batch: { select: { id: true, batchNumber: true, expiryDate: true } },
           },
         });
+
+        for (let idx = 0; idx < allocations.length; idx++) {
+          const alloc = allocations[idx];
+          await tx.stockLedgerEvent.create({
+            data: {
+              centreId: params.centreId,
+              productId: line.productId,
+              batchId: alloc.batchId,
+              eventType: LedgerEventType.DISTRIBUTED,
+              quantity: alloc.quantity,
+              referenceId: distribution.id,
+              referenceType: 'DISTRIBUTION',
+              remarks: `Distributed ${product.name} to ${beneficiary.localReference} (batch ${alloc.batchNumber})`,
+              idempotencyKey:
+                allocations.length === 1
+                  ? `dist-led-${itemIdempKey}`
+                  : `dist-led-${itemIdempKey}-${idx}`,
+              createdBy: params.userId,
+            },
+          });
+        }
+
+        await recordAuditLog(tx, {
+          actorId: params.userId,
+          action: 'BENEFICIARY_DISTRIBUTION',
+          entityType: 'Distribution',
+          entityId: distribution.id,
+          afterState: {
+            beneficiaryLocalRef: beneficiary.localReference,
+            productId: line.productId,
+            quantity: line.quantity,
+            allocations,
+          },
+          remarks: params.remarks,
+        });
+
+        results.push(distribution);
       }
 
-      await recordAuditLog(tx, {
-        actorId: params.userId,
-        action: 'BENEFICIARY_DISTRIBUTION',
-        entityType: 'Distribution',
-        entityId: distribution.id,
-        afterState: {
-          beneficiaryLocalRef: beneficiary.localReference,
-          productId: params.productId,
-          quantity: params.quantity,
-          allocations,
-        },
-        remarks: params.remarks,
-      });
-
-      return distribution;
-    },
-    { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
-  );
+      return results;
+    });
+  } catch (err) {
+    // Database-level duplicate distribution constraint (P2002)
+    const prismaErr = err as { code?: string; meta?: { target?: string[] } };
+    if (prismaErr?.code === 'P2002') {
+      const target = prismaErr.meta?.target || [];
+      if (target.includes('idempotencyKey')) {
+        const retryMatches = await prisma.distribution.findMany({
+          where: {
+            OR: [
+              { idempotencyKey: params.idempotencyKey },
+              { idempotencyKey: { startsWith: `${params.idempotencyKey}-item-` } },
+            ],
+          },
+          include: {
+            beneficiary: { select: { id: true, localReference: true, displayName: true, displayNameGu: true } },
+            product: { select: { id: true, name: true, nameGu: true, unit: true } },
+            batch: { select: { id: true, batchNumber: true, expiryDate: true } },
+          },
+        });
+        if (retryMatches.length > 0) {
+          return {
+            distributions: retryMatches,
+            distribution: retryMatches[0],
+            deduplicated: true,
+          };
+        }
+      }
+      throw new AppError(
+        409,
+        'DUPLICATE_DISTRIBUTION',
+        `${beneficiary.displayName} has already received one or more selected items on ${distributionDay}`
+      );
+    }
+    throw err;
+  }
 
   await refreshCentreAlerts(params.centreId);
-  return { distribution: created, deduplicated: false };
+  return {
+    distributions: createdList,
+    distribution: createdList[0],
+    deduplicated: false,
+  };
+}
+
+export async function executeDistribution(params: {
+  userId: string;
+  centreId: string;
+  beneficiaryReferenceId: string;
+  productId: string;
+  batchId?: string;
+  quantity: number;
+  distributedAt?: Date;
+  idempotencyKey: string;
+  remarks?: string;
+}) {
+  return executeMultiDistribution({
+    userId: params.userId,
+    centreId: params.centreId,
+    beneficiaryReferenceId: params.beneficiaryReferenceId,
+    items: [
+      {
+        productId: params.productId,
+        batchId: params.batchId,
+        quantity: params.quantity,
+      },
+    ],
+    distributedAt: params.distributedAt,
+    idempotencyKey: params.idempotencyKey,
+    remarks: params.remarks,
+  });
 }
 
 distributionRouter.post(
@@ -544,13 +678,22 @@ distributionRouter.post(
       await assertCentreInScope(req.user!, centreId);
       const idempotencyKey = parsed.idempotencyKey || `dist-${crypto.randomUUID()}`;
 
-      const result = await executeDistribution({
+      const items =
+        parsed.items && parsed.items.length > 0
+          ? parsed.items
+          : [
+              {
+                productId: parsed.productId!,
+                batchId: parsed.batchId,
+                quantity: parsed.quantity!,
+              },
+            ];
+
+      const result = await executeMultiDistribution({
         userId: req.user!.id,
         centreId,
         beneficiaryReferenceId: parsed.beneficiaryReferenceId,
-        productId: parsed.productId,
-        batchId: parsed.batchId,
-        quantity: parsed.quantity,
+        items,
         distributedAt: parsed.distributedAt ? new Date(parsed.distributedAt) : undefined,
         idempotencyKey,
         remarks: parsed.remarks,
@@ -558,7 +701,8 @@ distributionRouter.post(
 
       res.status(result.deduplicated ? 200 : 201).json({
         success: true,
-        data: result.distribution,
+        data: items.length > 1 ? result.distributions : result.distribution,
+        distributions: result.distributions,
         deduplicated: result.deduplicated,
       });
     } catch (err) {
@@ -591,7 +735,6 @@ distributionRouter.get('/', async (req, res, next) => {
             localReference: true,
             displayName: true,
             displayNameGu: true,
-            maskedIdLast4: true,
             beneficiaryCategory: true,
           },
         },
@@ -621,7 +764,6 @@ distributionRouter.get('/:id', async (req, res, next) => {
             localReference: true,
             displayName: true,
             displayNameGu: true,
-            maskedIdLast4: true,
             beneficiaryCategory: true,
           },
         },
@@ -637,4 +779,3 @@ distributionRouter.get('/:id', async (req, res, next) => {
     next(err);
   }
 });
-

@@ -1,4 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
+import { Capacitor } from '@capacitor/core';
+import { Network } from '@capacitor/network';
 import { UserProfile } from '../types';
 import {
   apiRequest,
@@ -7,12 +9,13 @@ import {
   getStoredTokens,
   setStoredTokens,
 } from '../lib/api';
-import { syncOutboxOperations } from '../lib/offlineDb';
+import { checkServerConnectivity, syncOutboxOperations } from '../lib/offlineDb';
 
 interface AuthContextValue {
   user: UserProfile | null;
   loading: boolean;
   isOnline: boolean;
+  refreshConnectivity: () => Promise<boolean>;
   login: (username: string, password: string) => Promise<UserProfile>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
@@ -39,20 +42,48 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   });
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
 
-  useEffect(() => {
-    const handleOnline = () => {
-      setIsOnline(true);
-      if (user?.centreId) {
+  const refreshConnectivity = async (): Promise<boolean> => {
+    const reachable = await checkServerConnectivity();
+    setIsOnline((prev) => {
+      if (!prev && reachable && user?.centreId) {
         syncOutboxOperations(user.centreId).catch(() => undefined);
       }
+      return reachable;
+    });
+    return reachable;
+  };
+
+  useEffect(() => {
+    refreshConnectivity().catch(() => undefined);
+
+    const handleOnline = () => {
+      refreshConnectivity().catch(() => undefined);
     };
     const handleOffline = () => setIsOnline(false);
 
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
+    window.addEventListener('focus', handleOnline);
+    const interval = setInterval(() => {
+      refreshConnectivity().catch(() => undefined);
+    }, 30000);
+
+    const networkListener = Capacitor.isNativePlatform()
+      ? Network.addListener('networkStatusChange', (status) => {
+          if (status.connected) {
+            refreshConnectivity().catch(() => undefined);
+          } else {
+            setIsOnline(false);
+          }
+        })
+      : null;
+
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('focus', handleOnline);
+      clearInterval(interval);
+      networkListener?.then((h) => h.remove()).catch(() => undefined);
     };
   }, [user?.centreId]);
 
@@ -121,7 +152,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   return React.createElement(
     AuthContext.Provider,
-    { value: { user, loading, isOnline, login, logout, refreshUser } },
+    { value: { user, loading, isOnline, refreshConnectivity, login, logout, refreshUser } },
     children
   );
 }

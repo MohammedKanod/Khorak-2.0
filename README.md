@@ -9,9 +9,25 @@ KHORAK provides digital, batch-level accountability across the ICDS supplementar
 
 ## Architecture & Stack
 
-- **Frontend (`frontend/`)**: React 19, TypeScript, Vite, Tailwind CSS, Lucide Icons, Recharts, Dexie.js (IndexedDB outbox & snapshot cache), `vite-plugin-pwa` Service Worker, `jsqr` + `qrcode` for local Aadhaar Offline XML QR processing.
-- **Backend (`backend/`)**: Node.js, Express, TypeScript, Prisma ORM, PostgreSQL, Zod validation, JWT + bcrypt authentication, Multer persistent local evidence uploads, Helmet & Rate Limiting.
-- **Database (`backend/prisma/schema.prisma`)**: Append-only `StockLedgerEvent` table, UUID primary keys, strict idempotency keys, and full organisational hierarchy (`District -> Block -> Sector -> AnganwadiCentre`).
+- **Frontend (`frontend/`)**: React 19 (`^19.3.1`), TypeScript (`^7.0.2`), Vite, Tailwind CSS v4, Lucide Icons, Recharts, Dexie.js (`^4.4.7` IndexedDB outbox & snapshot cache), `vite-plugin-pwa` Service Worker, Capacitor 8 (`@capacitor/core@^8.6.3`, `@capacitor/android@^8.6.3`) for installable offline-first Android APKs, and `jsqr` + `qrcode` + Web Crypto HMAC-SHA256 for 100% local Aadhaar Offline XML QR processing.
+- **Backend (`backend/`)**: Node.js, Express 5 (`^5.3.0`), TypeScript (`^7.0.2`), Prisma ORM (`^6.19.3`), PostgreSQL, Zod (`^4.6.7`) validation, JWT + bcryptjs authentication, Multer persistent evidence uploads, Helmet & Rate Limiting, and PostgreSQL transactional advisory locks (`pg_advisory_xact_lock`).
+- **Database (`backend/prisma/schema.prisma`)**: Append-only `StockLedgerEvent` table, UUID primary keys, strict idempotency keys, DB-level unique daily beneficiary distribution protection, Supervisor→Supplier `DispatchAppeal`, AWW→Supervisor→Supplier `StockRequest`, and full organisational hierarchy (`District -> Block -> Sector -> AnganwadiCentre`).
+
+## Privacy & Aadhaar Handling
+
+- QR scanning runs **100% locally** on the client device. Raw Aadhaar XML and Aadhaar digits (including last-4 digits) are **never stored, displayed, logged, or sent to external services**.
+- Only a per-centre salted HMAC-SHA256 `protectedCredentialReference` + minimal display name and birth year (`yob`) are registered and matched. Offline QR mapping is distinct from live UIDAI authentication.
+
+## Building the Offline-First Android APK (Capacitor)
+
+```bash
+npm --prefix frontend run build
+cd frontend
+npx cap sync android
+cd android
+./gradlew assembleDebug
+```
+The debug APK is generated at `frontend/android/app/build/outputs/apk/debug/app-debug.apk`.
 
 ---
 

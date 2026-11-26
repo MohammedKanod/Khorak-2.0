@@ -175,16 +175,15 @@ A separate beneficiary application is not required.
 - Allow supervisors to investigate and resolve discrepancies.
 - Require remarks for approvals and adjustments.
 
-### FR-06: Beneficiary Verification & Distribution
-- Scan Aadhaar Offline XML QR credentials.
-- Process supported credential data locally.
-- Identify the beneficiary using an authorised beneficiary mapping.
-- Select nutrition product and quantity.
-- Validate available stock before distribution.
-- Record beneficiary handover and update the inventory ledger.
-- Prevent duplicate transaction submissions.
+### FR-06: Beneficiary Registration, Verification & Multi-Item Distribution
+- QR-first beneficiary onboarding: AWW taps **Scan Aadhaar QR**, camera opens directly, local XML parser extracts minimal display name and birth year plus a centre-salted HMAC-SHA256 `protectedCredentialReference`, and shows a confirmation card before submission (with offline queueing and manual registration fallback when QR is unavailable).
+- Strict privacy: zero raw, partial, or last-4 masked Aadhaar digits are ever displayed in UI, logs, notifications, or API payloads, and raw XML never leaves the device.
+- Distribution opens directly on the prominent camera QR scanner; once verified against authorised local records, AWW may add one or more nutrition items (`+ Add Another Item`) in a single atomic checkout.
+- Enforce FEFO allocation, exclude expired/damaged/quarantined stock, validate usable balances with transactional concurrency locks, and prevent same-day duplicate handouts per beneficiary/product.
 
-Raw Aadhaar XML must not be transmitted to external services or retained unnecessarily.
+### FR-06B: Connected Supervisor Appeals & AWW Stock Requests
+- **Dispatch Appeals**: Supervisors/CDPOs can raise formal shortage/damage appeals linked to discrepancy cases, attach evidence, receive owning-supplier responses, and resolve or escalate through an auditable history trail.
+- **Stock Requests**: AWWs/AWHs can request stock replenishment online or offline; Supervisors review (`APPROVE`, `PARTIAL_APPROVE`, `REJECT`) without self-approval; approvals unlock supplier fulfillment dispatches without directly modifying inventory until physical receipt confirmation.
 
 ### FR-07: Stock Usage & Spoilage
 - Record HCM ingredient consumption.

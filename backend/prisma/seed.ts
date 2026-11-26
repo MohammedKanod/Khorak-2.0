@@ -1,6 +1,6 @@
 import bcrypt from 'bcryptjs';
-import crypto from 'crypto';
 import {
+  AppealStatus,
   BeneficiaryCategory,
   BeneficiaryStatus,
   BatchStatus,
@@ -11,23 +11,24 @@ import {
   ProductCategory,
   Role,
   SpoilageStatus,
+  StockRequestReason,
+  StockRequestStatus,
 } from '@prisma/client';
 import { prisma } from '../src/lib/prisma';
 import { refreshAllActiveCentreAlerts } from '../src/services/alert.service';
 import { formatIstDate } from '../src/lib/math';
+import { computeHmacCredentialRef, generateCentreSalt } from '../src/lib/credential';
 
 /**
- * Computes deterministic protectedCredentialReference matching frontend Aadhaar Offline XML QR parser.
- * Format: SHA-256 of `khorak-uidai-offline-v1|${last4}|${normalizedName}|${yob}`
+ * Computes centre-salted HMAC-SHA256 protectedCredentialReference matching frontend Aadhaar Offline XML QR parser.
  */
 export function computeProtectedCredentialRef(
+  salt: string,
   last4: string,
   name: string,
   yob: string
 ): string {
-  const normalizedName = name.trim().toLowerCase().replace(/\s+/g, ' ');
-  const raw = `khorak-uidai-offline-v1|${last4.trim()}|${normalizedName}|${yob.trim()}`;
-  return crypto.createHash('sha256').update(raw).digest('hex');
+  return computeHmacCredentialRef({ salt, last4, name, yob });
 }
 
 function daysFromNow(days: number): Date {
@@ -47,11 +48,15 @@ async function seed() {
   await prisma.spoilageReport.deleteMany();
   await prisma.distribution.deleteMany();
   await prisma.stockLedgerEvent.deleteMany();
+  await prisma.dispatchAppealHistory.deleteMany();
+  await prisma.dispatchAppeal.deleteMany();
   await prisma.discrepancyCase.deleteMany();
   await prisma.deliveryReceiptItem.deleteMany();
   await prisma.deliveryReceipt.deleteMany();
   await prisma.dispatchItem.deleteMany();
   await prisma.dispatch.deleteMany();
+  await prisma.stockRequestHistory.deleteMany();
+  await prisma.stockRequest.deleteMany();
   await prisma.productBatch.deleteMany();
   await prisma.product.deleteMany();
   await prisma.beneficiaryReference.deleteMany();
@@ -95,7 +100,7 @@ async function seed() {
     data: { blockId: kalol.id, name: 'Kalol Central', code: 'SEC-KLL-C1' },
   });
 
-  // 4. Anganwadi Centres
+  // 4. Anganwadi Centres (each gets its own centre-scoped HMAC salt for offline QR credential hashing)
   const awcVavdi = await prisma.anganwadiCentre.create({
     data: {
       sectorId: secGodhraUrban.id,
@@ -103,6 +108,7 @@ async function seed() {
       nameGu: 'વાવડી બુજર્ગ આંગણવાડી-૦૧',
       code: 'AWC-GDR-01',
       location: 'Vavdi Bujarg, Godhra, Panchmahal',
+      offlineCredentialSalt: generateCentreSalt(),
     },
   });
   const awcBamroli = await prisma.anganwadiCentre.create({
@@ -112,6 +118,7 @@ async function seed() {
       nameGu: 'બામરોલી ખુર્દ આંગણવાડી-૦૨',
       code: 'AWC-GDR-02',
       location: 'Bamroli Khurd, Godhra, Panchmahal',
+      offlineCredentialSalt: generateCentreSalt(),
     },
   });
   const awcKankoda = await prisma.anganwadiCentre.create({
@@ -121,6 +128,7 @@ async function seed() {
       nameGu: 'કાંકોડાકુઈ આંગણવાડી-૦૩',
       code: 'AWC-GDR-03',
       location: 'Kankodakui, Godhra, Panchmahal',
+      offlineCredentialSalt: generateCentreSalt(),
     },
   });
   const awcHalol1 = await prisma.anganwadiCentre.create({
@@ -130,6 +138,7 @@ async function seed() {
       nameGu: 'હાલોલ સ્ટેશન આંગણવાડી-૦૪',
       code: 'AWC-HLL-01',
       location: 'Station Road, Halol, Panchmahal',
+      offlineCredentialSalt: generateCentreSalt(),
     },
   });
   const awcHalol2 = await prisma.anganwadiCentre.create({
@@ -139,6 +148,7 @@ async function seed() {
       nameGu: 'પાવાગઢ તળેટી આંગણવાડી-૦૫',
       code: 'AWC-HLL-02',
       location: 'Pavagadh Road, Halol, Panchmahal',
+      offlineCredentialSalt: generateCentreSalt(),
     },
   });
   const awcKalol1 = await prisma.anganwadiCentre.create({
@@ -148,6 +158,7 @@ async function seed() {
       nameGu: 'કાલોલ બજાર આંગણવાડી-૦૬',
       code: 'AWC-KLL-01',
       location: 'Main Bazaar, Kalol, Panchmahal',
+      offlineCredentialSalt: generateCentreSalt(),
     },
   });
 
@@ -433,14 +444,19 @@ async function seed() {
     },
   });
 
-  // 9. Synthetic Beneficiary References (NO raw Aadhaar stored)
+  // 9. Synthetic Beneficiary References (ZERO raw or masked Aadhaar digits stored)
+  const centreSalts: Record<string, string> = {
+    [awcVavdi.id]: awcVavdi.offlineCredentialSalt || '',
+    [awcBamroli.id]: awcBamroli.offlineCredentialSalt || '',
+  };
+
   const syntheticBeneficiaries = [
     {
       centreId: awcVavdi.id,
       localReference: 'BEN-GDR01-001',
       displayName: 'Poojaben Maheshbhai Bariya',
       displayNameGu: 'પૂજાબેન મહેશભાઈ બારિયા',
-      maskedIdLast4: '4821',
+      syntheticLast4: '4821',
       yob: '1997',
       category: BeneficiaryCategory.PREGNANT_WOMAN,
     },
@@ -449,7 +465,7 @@ async function seed() {
       localReference: 'BEN-GDR01-002',
       displayName: 'Aarav Sureshbhai Parmar',
       displayNameGu: 'આરવ સુરેશભાઈ પરમાર',
-      maskedIdLast4: '7394',
+      syntheticLast4: '7394',
       yob: '2024',
       category: BeneficiaryCategory.CHILD_6M_3Y,
     },
@@ -458,7 +474,7 @@ async function seed() {
       localReference: 'BEN-GDR01-003',
       displayName: 'Kajalben Rameshbhai Nayak',
       displayNameGu: 'કાજલબેન રમેશભાઈ નાયક',
-      maskedIdLast4: '1508',
+      syntheticLast4: '1508',
       yob: '1999',
       category: BeneficiaryCategory.LACTATING_MOTHER,
     },
@@ -467,7 +483,7 @@ async function seed() {
       localReference: 'BEN-GDR01-004',
       displayName: 'Diyaben Kiranbhai Rathwa',
       displayNameGu: 'દિયાબેન કિરણભાઈ રાઠવા',
-      maskedIdLast4: '9260',
+      syntheticLast4: '9260',
       yob: '2011',
       category: BeneficiaryCategory.ADOLESCENT_GIRL,
     },
@@ -476,7 +492,7 @@ async function seed() {
       localReference: 'BEN-GDR02-001',
       displayName: 'Nandini Rajeshbhai Patel',
       displayNameGu: 'નંદિની રાજેશભાઈ પટેલ',
-      maskedIdLast4: '3147',
+      syntheticLast4: '3147',
       yob: '2023',
       category: BeneficiaryCategory.CHILD_3Y_6Y,
     },
@@ -490,7 +506,7 @@ async function seed() {
         localReference: b.localReference,
         displayName: b.displayName,
         displayNameGu: b.displayNameGu,
-        maskedIdLast4: b.maskedIdLast4,
+        maskedIdLast4: null,
         yob: b.yob,
         beneficiaryCategory: b.category,
         status: BeneficiaryStatus.APPROVED,
@@ -498,7 +514,8 @@ async function seed() {
         reviewedAt: daysFromNow(-5),
         reviewRemarks: 'Verified during initial centre setup',
         protectedCredentialReference: computeProtectedCredentialRef(
-          b.maskedIdLast4,
+          centreSalts[b.centreId],
+          b.syntheticLast4,
           b.displayName,
           b.yob
         ),
@@ -514,12 +531,13 @@ async function seed() {
       localReference: 'BEN-GDR01-005',
       displayName: 'Sonalben Vijaybhai Gohil',
       displayNameGu: 'સોનલબેન વિજયભાઈ ગોહિલ',
-      maskedIdLast4: '6429',
+      maskedIdLast4: null,
       yob: '2001',
       beneficiaryCategory: BeneficiaryCategory.PREGNANT_WOMAN,
       status: BeneficiaryStatus.PENDING_APPROVAL,
       requestedBy: awwVavdi.id,
       protectedCredentialReference: computeProtectedCredentialRef(
+        awcVavdi.offlineCredentialSalt || '',
         '6429',
         'Sonalben Vijaybhai Gohil',
         '2001'
@@ -701,7 +719,7 @@ async function seed() {
     },
   });
 
-  await prisma.discrepancyCase.create({
+  const discCase = await prisma.discrepancyCase.create({
     data: {
       dispatchId: discDispatch.id,
       deliveryReceiptId: discReceipt.id,
@@ -711,6 +729,96 @@ async function seed() {
       missingQuantity: 5,
       difference: 8,
       status: DiscrepancyStatus.OPEN,
+    },
+  });
+
+  // 12b. Connected Demo Dispatch Appeal & Stock Requests
+  await prisma.dispatchAppeal.create({
+    data: {
+      appealReference: 'APL-AWC-GDR-02-DEMO01',
+      dispatchId: discDispatch.id,
+      discrepancyCaseId: discCase.id,
+      supplierId: gcmmfl.id,
+      centreId: awcBamroli.id,
+      productId: balShakti.id,
+      batchId: batchBalFresh.id,
+      dispatchedQuantity: 60,
+      receivedQuantity: 52,
+      damagedQuantity: 3,
+      missingQuantity: 5,
+      supervisorRemarks: '3 packets torn in transit and 5 packets missing from sealed crate upon AWC verification. Requesting supplier explanation and credit/replacement batch.',
+      status: AppealStatus.AWAITING_SUPPLIER_RESPONSE,
+      createdBy: supervisorUser.id,
+      history: {
+        create: [
+          {
+            actorId: supervisorUser.id,
+            fromStatus: null,
+            toStatus: AppealStatus.AWAITING_SUPPLIER_RESPONSE,
+            action: 'SUBMITTED_TO_SUPPLIER',
+            remarks: 'Discrepancy appeal raised to GCMMFL supplier',
+          },
+        ],
+      },
+    },
+  });
+
+  await prisma.stockRequest.create({
+    data: {
+      requestNumber: 'REQ-AWC-GDR-01-DEMO1',
+      centreId: awcVavdi.id,
+      productId: purnaShakti.id,
+      requestedQuantity: 40,
+      reason: StockRequestReason.LOW_STOCK,
+      remarks: 'Stock down to critical 2-day cover for adolescent girls',
+      status: StockRequestStatus.PENDING_APPROVAL,
+      requestedBy: awwVavdi.id,
+      idempotencyKey: 'seed-stock-req-001',
+      history: {
+        create: {
+          actorId: awwVavdi.id,
+          fromStatus: null,
+          toStatus: StockRequestStatus.PENDING_APPROVAL,
+          action: 'SUBMITTED',
+          remarks: 'Initial urgent replenishment request from Vavdi AWC-01',
+        },
+      },
+    },
+  });
+
+  await prisma.stockRequest.create({
+    data: {
+      requestNumber: 'REQ-AWC-GDR-01-DEMO2',
+      centreId: awcVavdi.id,
+      productId: oil.id,
+      requestedQuantity: 20,
+      approvedQuantity: 15,
+      reason: StockRequestReason.LOW_STOCK,
+      remarks: 'Zero stock on shelf for Hot Cooked Meal preparation',
+      reviewRemarks: 'Approved 15 litres based on block allocation; ready for supplier dispatch',
+      status: StockRequestStatus.APPROVED,
+      requestedBy: awwVavdi.id,
+      reviewedBy: supervisorUser.id,
+      reviewedAt: daysFromNow(-1),
+      idempotencyKey: 'seed-stock-req-002',
+      history: {
+        create: [
+          {
+            actorId: awwVavdi.id,
+            fromStatus: null,
+            toStatus: StockRequestStatus.PENDING_APPROVAL,
+            action: 'SUBMITTED',
+            remarks: 'Urgent oil stockout request',
+          },
+          {
+            actorId: supervisorUser.id,
+            fromStatus: StockRequestStatus.PENDING_APPROVAL,
+            toStatus: StockRequestStatus.APPROVED,
+            action: 'PARTIAL_APPROVE',
+            remarks: 'Approved 15 litres for immediate supplier dispatch',
+          },
+        ],
+      },
     },
   });
 

@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import { createApp } from '../src/app';
 import { prisma } from '../src/lib/prisma';
 import { classifyReorderLevel } from '../src/services/ledger.service';
+import { computeHmacCredentialRef } from '../src/lib/credential';
 
 const app = createApp();
 
@@ -16,14 +17,6 @@ async function loginAs(username: string): Promise<string> {
   return res.body.data.accessToken;
 }
 
-function computeCredentialHash(last4: string, name: string, yob: string) {
-  const normalizedName = name.trim().toLowerCase().replace(/\s+/g, ' ');
-  return crypto
-    .createHash('sha256')
-    .update(`khorak-uidai-offline-v1|${last4}|${normalizedName}|${yob}`)
-    .digest('hex');
-}
-
 describe('KHORAK Acceptance & Supply Chain Integrity Tests', () => {
   let awwToken: string;
   let supplierToken: string;
@@ -31,9 +24,11 @@ describe('KHORAK Acceptance & Supply Chain Integrity Tests', () => {
   let ddoToken: string;
 
   let vavdiCentreId: string;
+  let vavdiSalt: string;
   let balShaktiId: string;
   let matruShaktiId: string;
   let gcmmflId: string;
+  let gscscId: string;
   let beneficiaryPoojaId: string;
   let expiredBatchId: string;
   let activeMatBatchId: string;
@@ -48,6 +43,8 @@ describe('KHORAK Acceptance & Supply Chain Integrity Tests', () => {
       where: { code: 'AWC-GDR-01' },
     });
     vavdiCentreId = centre.id;
+    vavdiSalt = centre.offlineCredentialSalt || '';
+    expect(vavdiSalt.length).toBeGreaterThanOrEqual(16);
 
     const bal = await prisma.product.findUniqueOrThrow({ where: { code: 'THR-BAL' } });
     const mat = await prisma.product.findUniqueOrThrow({ where: { code: 'THR-MAT' } });
@@ -56,6 +53,8 @@ describe('KHORAK Acceptance & Supply Chain Integrity Tests', () => {
 
     const sup = await prisma.supplier.findUniqueOrThrow({ where: { code: 'GCMMFL-PMH' } });
     gcmmflId = sup.id;
+    const otherSup = await prisma.supplier.findUniqueOrThrow({ where: { code: 'GSCSC-GDR' } });
+    gscscId = otherSup.id;
 
     const ben = await prisma.beneficiaryReference.findFirstOrThrow({
       where: { centreId: vavdiCentreId, localReference: 'BEN-GDR01-001' },
@@ -132,9 +131,14 @@ describe('KHORAK Acceptance & Supply Chain Integrity Tests', () => {
     expect(reviewRes.body.data.status).toBe('RESOLVED');
   });
 
-  it('Test B & C: Verify synthetic Aadhaar Offline XML QR credential, record distribution, and block duplicate submission', async () => {
-    // 1. Verify offline credential hash locally derived from Poojaben's synthetic Aadhaar XML
-    const hash = computeCredentialHash('4821', 'Poojaben Maheshbhai Bariya', '1997');
+  it('Test B & C: Verify synthetic Aadhaar Offline XML QR credential (HMAC-SHA256), record distribution, and block duplicate submission', async () => {
+    // 1. Verify offline credential HMAC hash locally derived from Poojaben's synthetic Aadhaar XML + centre salt
+    const hash = computeHmacCredentialRef({
+      salt: vavdiSalt,
+      last4: '4821',
+      name: 'Poojaben Maheshbhai Bariya',
+      yob: '1997',
+    });
     const verifyRes = await request(app)
       .post('/api/beneficiaries/verify-offline-credential')
       .set('Authorization', `Bearer ${awwToken}`)
@@ -142,6 +146,8 @@ describe('KHORAK Acceptance & Supply Chain Integrity Tests', () => {
 
     expect(verifyRes.status).toBe(200);
     expect(verifyRes.body.data.beneficiary.id).toBe(beneficiaryPoojaId);
+    expect(JSON.stringify(verifyRes.body)).not.toContain('4821');
+    expect(JSON.stringify(verifyRes.body)).not.toContain('maskedIdLast4');
 
     const beforeInv = await request(app)
       .get(`/api/inventory/${vavdiCentreId}`)
@@ -330,22 +336,30 @@ describe('KHORAK Acceptance & Supply Chain Integrity Tests', () => {
     expect(Array.isArray(ddoAllowed.body.data.nutritionIndicators)).toBe(true);
   });
 
-  it('Test J: AWW adds beneficiary (PENDING_APPROVAL), blocked until Sevika approves, then distributes', async () => {
+  it('Test J: AWW adds beneficiary (PENDING_APPROVAL), blocked until Sevika approves, then distributes (zero Aadhaar digits exposed)', async () => {
+    const credHash = computeHmacCredentialRef({
+      salt: vavdiSalt,
+      last4: '5519',
+      name: 'Rekhaben Naranbhai Solanki',
+      yob: '2000',
+    });
+
     const createRes = await request(app)
       .post('/api/beneficiaries')
       .set('Authorization', `Bearer ${awwToken}`)
       .send({
         displayName: 'Rekhaben Naranbhai Solanki',
         displayNameGu: 'રેખાબેન નારણભાઈ સોલંકી',
-        maskedIdLast4: '5519',
         yob: '2000',
         beneficiaryCategory: 'LACTATING_MOTHER',
+        protectedCredentialReference: credHash,
       });
 
     expect(createRes.status).toBe(201);
     expect(createRes.body.data.status).toBe('PENDING_APPROVAL');
+    expect(JSON.stringify(createRes.body)).not.toContain('5519');
+    expect(JSON.stringify(createRes.body)).not.toContain('maskedIdLast4');
     const newBenId = createRes.body.data.id;
-    const credHash = computeCredentialHash('5519', 'Rekhaben Naranbhai Solanki', '2000');
 
     // Blocked before Sevika approval
     const verifyBlocked = await request(app)
@@ -398,6 +412,336 @@ describe('KHORAK Acceptance & Supply Chain Integrity Tests', () => {
     expect(ddoRes.body.data.metrics.kpis.totalCentres).toBeGreaterThanOrEqual(6);
     expect(Array.isArray(ddoRes.body.data.discrepancies)).toBe(true);
     expect(Array.isArray(ddoRes.body.data.beneficiaries)).toBe(true);
+    expect(Array.isArray(ddoRes.body.data.appeals)).toBe(true);
+    expect(Array.isArray(ddoRes.body.data.stockRequests)).toBe(true);
     expect(Array.isArray(ddoRes.body.data.metrics.nutritionIndicators)).toBe(true);
+    expect(JSON.stringify(ddoRes.body.data.beneficiaries)).not.toContain('maskedIdLast4');
+  });
+
+  it('Privacy check: /api/beneficiaries, /api/sync/pull, /api/dashboard/centre omit maskedIdLast4', async () => {
+    const [benRes, pullRes, dashRes] = await Promise.all([
+      request(app).get('/api/beneficiaries').set('Authorization', `Bearer ${awwToken}`),
+      request(app).get('/api/sync/pull').set('Authorization', `Bearer ${awwToken}`),
+      request(app).get(`/api/dashboard/centre?centreId=${vavdiCentreId}`).set('Authorization', `Bearer ${awwToken}`),
+    ]);
+    expect(benRes.status).toBe(200);
+    expect(pullRes.status).toBe(200);
+    expect(dashRes.status).toBe(200);
+    expect(pullRes.body.data.centre.offlineCredentialSalt).toBeTruthy();
+    expect(Array.isArray(pullRes.body.data.stockRequests)).toBe(true);
+    for (const payload of [benRes.body, pullRes.body, dashRes.body]) {
+      expect(JSON.stringify(payload)).not.toContain('maskedIdLast4');
+    }
+  });
+
+  it('Multi-item distribution is atomic and concurrent duplicate/stock-limit requests never corrupt ledger', async () => {
+    const ben2 = await prisma.beneficiaryReference.findFirstOrThrow({
+      where: { centreId: vavdiCentreId, localReference: 'BEN-GDR01-002' },
+    });
+    const oil = await prisma.product.findUniqueOrThrow({ where: { code: 'HCM-OIL' } }); // 0 stock at Vavdi
+
+    const beforeInv = await request(app)
+      .get(`/api/inventory/${vavdiCentreId}`)
+      .set('Authorization', `Bearer ${awwToken}`);
+    const beforeBal = beforeInv.body.data.products.find((p: { productId: string }) => p.productId === balShaktiId).usableStock;
+
+    // 1. Multi-item where 2nd item (Oil) has 0 stock -> 1st item (Bal Shakti) MUST roll back
+    const atomicFail = await request(app)
+      .post('/api/distributions')
+      .set('Authorization', `Bearer ${awwToken}`)
+      .send({
+        beneficiaryReferenceId: ben2.id,
+        idempotencyKey: `atomic-fail-${Date.now()}`,
+        items: [
+          { productId: balShaktiId, quantity: 2 },
+          { productId: oil.id, quantity: 1 },
+        ],
+      });
+    expect(atomicFail.status).toBe(400);
+    expect(atomicFail.body.error.code).toBe('INSUFFICIENT_STOCK');
+
+    const midInv = await request(app)
+      .get(`/api/inventory/${vavdiCentreId}`)
+      .set('Authorization', `Bearer ${awwToken}`);
+    const midBal = midInv.body.data.products.find((p: { productId: string }) => p.productId === balShaktiId).usableStock;
+    expect(midBal).toBe(beforeBal);
+
+    // 2. Concurrent same-beneficiary, same-product, same-day distributions -> only 1 succeeds (DB unique constraint)
+    const rice = await prisma.product.findUniqueOrThrow({ where: { code: 'HCM-RICE' } });
+    const [r1, r2] = await Promise.all([
+      request(app)
+        .post('/api/distributions')
+        .set('Authorization', `Bearer ${awwToken}`)
+        .send({
+          beneficiaryReferenceId: ben2.id,
+          productId: rice.id,
+          quantity: 1,
+          idempotencyKey: `conc-1-${Date.now()}`,
+        }),
+      request(app)
+        .post('/api/distributions')
+        .set('Authorization', `Bearer ${awwToken}`)
+        .send({
+          beneficiaryReferenceId: ben2.id,
+          productId: rice.id,
+          quantity: 1,
+          idempotencyKey: `conc-2-${Date.now()}`,
+        }),
+    ]);
+    const statuses = [r1.status, r2.status].sort();
+    expect(statuses).toEqual([201, 409]);
+
+    // 3. Valid multi-item distribution succeeds
+    const ben4 = await prisma.beneficiaryReference.findFirstOrThrow({
+      where: { centreId: vavdiCentreId, localReference: 'BEN-GDR01-004' },
+    });
+    const multiOk = await request(app)
+      .post('/api/distributions')
+      .set('Authorization', `Bearer ${awwToken}`)
+      .send({
+        beneficiaryReferenceId: ben4.id,
+        idempotencyKey: `multi-ok-${Date.now()}`,
+        items: [
+          { productId: balShaktiId, quantity: 1 },
+          { productId: matruShaktiId, quantity: 1 },
+        ],
+      });
+    expect(multiOk.status).toBe(201);
+    expect(Array.isArray(multiOk.body.data)).toBe(true);
+    expect(multiOk.body.data).toHaveLength(2);
+  });
+
+  it('Supplier ownership and strict receipt-line validation enforced', async () => {
+    // Forging supplierId blocked
+    const forged = await request(app)
+      .post('/api/dispatches')
+      .set('Authorization', `Bearer ${supplierToken}`)
+      .send({
+        supplierId: gscscId,
+        destinationCentreId: vavdiCentreId,
+        items: [
+          {
+            productId: balShaktiId,
+            batchNumber: `FORGE-${Date.now()}`,
+            expiryDate: new Date(Date.now() + 60 * 86400000).toISOString(),
+            expectedQuantity: 10,
+          },
+        ],
+      });
+    expect(forged.status).toBe(403);
+
+    // Create legitimate dispatch and test malformed receipt payloads
+    const goodDispatch = await request(app)
+      .post('/api/dispatches')
+      .set('Authorization', `Bearer ${supplierToken}`)
+      .send({
+        destinationCentreId: vavdiCentreId,
+        items: [
+          {
+            productId: balShaktiId,
+            batchNumber: `VALID-${Date.now()}`,
+            expiryDate: new Date(Date.now() + 60 * 86400000).toISOString(),
+            expectedQuantity: 20,
+          },
+        ],
+      });
+    expect(goodDispatch.status).toBe(201);
+    const dsp = goodDispatch.body.data;
+
+    // Duplicate line rejected
+    const dupLine = await request(app)
+      .post(`/api/dispatches/${dsp.id}/receipt`)
+      .set('Authorization', `Bearer ${awwToken}`)
+      .send({
+        idempotencyKey: `dup-line-${Date.now()}`,
+        items: [
+          { productId: balShaktiId, batchId: dsp.items[0].batchId, acceptedQuantity: 10, damagedQuantity: 0, missingQuantity: 10 },
+          { productId: balShaktiId, batchId: dsp.items[0].batchId, acceptedQuantity: 10, damagedQuantity: 0, missingQuantity: 10 },
+        ],
+      });
+    expect(dupLine.status).toBe(400);
+
+    // Mismatched total rejected
+    const badTotal = await request(app)
+      .post(`/api/dispatches/${dsp.id}/receipt`)
+      .set('Authorization', `Bearer ${awwToken}`)
+      .send({
+        idempotencyKey: `bad-total-${Date.now()}`,
+        items: [
+          { productId: balShaktiId, batchId: dsp.items[0].batchId, acceptedQuantity: 15, damagedQuantity: 1, missingQuantity: 1 },
+        ],
+      });
+    expect(badTotal.status).toBe(400);
+  });
+
+  it('Connected Workflow: Supervisor -> Supplier Dispatch Appeal lifecycle & authorization', async () => {
+    const discCase = await prisma.discrepancyCase.findFirstOrThrow({
+      where: {
+        dispatch: { dispatchReference: 'DSP-GDR02-2026-DEMO02' },
+      },
+    });
+
+    // AWW cannot raise supplier appeals
+    const awwDenied = await request(app)
+      .post('/api/appeals')
+      .set('Authorization', `Bearer ${awwToken}`)
+      .send({
+        discrepancyCaseId: discCase.id,
+        supervisorRemarks: 'Testing unauthorized creation',
+      });
+    expect(awwDenied.status).toBe(403);
+
+    // Supervisor creates and immediately submits appeal
+    const createAppeal = await request(app)
+      .post('/api/appeals')
+      .set('Authorization', `Bearer ${supervisorToken}`)
+      .send({
+        discrepancyCaseId: discCase.id,
+        supervisorRemarks: 'Supervisor verified 8 missing/torn packets at Bamroli AWC-02.',
+        submitImmediately: true,
+      });
+    expect(createAppeal.status).toBe(201);
+    expect(createAppeal.body.data.status).toBe('AWAITING_SUPPLIER_RESPONSE');
+    const appealId = createAppeal.body.data.id;
+
+    // Owning supplier responds
+    const supplierResp = await request(app)
+      .post(`/api/appeals/${appealId}/respond`)
+      .set('Authorization', `Bearer ${supplierToken}`)
+      .send({
+        supplierRemarks: 'Verified crate weight log at depot; issuing 8-packet credit note & replacement batch.',
+      });
+    expect(supplierResp.status).toBe(200);
+    expect(supplierResp.body.data.status).toBe('SUPPLIER_RESPONDED');
+
+    // Supervisor resolves appeal
+    const resolveAppeal = await request(app)
+      .post(`/api/appeals/${appealId}/review`)
+      .set('Authorization', `Bearer ${supervisorToken}`)
+      .send({
+        decision: 'RESOLVED',
+        remarks: 'Replacement batch verified and appeal closed.',
+      });
+    expect(resolveAppeal.status).toBe(200);
+    expect(resolveAppeal.body.data.status).toBe('RESOLVED');
+    expect(resolveAppeal.body.data.history.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('Connected Workflow: AWW -> Supervisor -> Supplier Stock Request lifecycle + Offline Sync Queue', async () => {
+    const dal = await prisma.product.findUniqueOrThrow({ where: { code: 'HCM-DAL' } });
+    const reqUuid = `sync-req-${crypto.randomUUID()}`;
+    const benUuid = `sync-ben-${crypto.randomUUID()}`;
+
+    // Push offline beneficiary + stock request
+    const syncRes = await request(app)
+      .post('/api/sync/push')
+      .set('Authorization', `Bearer ${awwToken}`)
+      .send({
+        operations: [
+          {
+            operationUuid: benUuid,
+            operationType: 'CREATE_BENEFICIARY',
+            createdAt: new Date().toISOString(),
+            payload: {
+              displayName: 'Offline Sync Beneficiary',
+              yob: '2022',
+              beneficiaryCategory: 'CHILD_3Y_6Y',
+            },
+          },
+          {
+            operationUuid: reqUuid,
+            operationType: 'CREATE_STOCK_REQUEST',
+            createdAt: new Date().toISOString(),
+            payload: {
+              productId: dal.id,
+              requestedQuantity: 25,
+              reason: 'LOW_STOCK',
+              remarks: 'Offline stock request for Toor Dal',
+            },
+          },
+        ],
+      });
+    expect(syncRes.status).toBe(200);
+    expect(syncRes.body.data.results.every((r: { status: string }) => r.status === 'SYNCED')).toBe(true);
+    const reqId = syncRes.body.data.results[1].data.id;
+
+    // AWW cannot self-approve stock request
+    const selfApprove = await request(app)
+      .post(`/api/stock-requests/${reqId}/review`)
+      .set('Authorization', `Bearer ${awwToken}`)
+      .send({ decision: 'APPROVE', remarks: 'Self approve' });
+    expect(selfApprove.status).toBe(403);
+
+    // Check inventory before approval (approval MUST NOT increase inventory directly)
+    const invBefore = await request(app)
+      .get(`/api/inventory/${vavdiCentreId}`)
+      .set('Authorization', `Bearer ${awwToken}`);
+    const dalBefore = invBefore.body.data.products.find((p: { productId: string }) => p.productId === dal.id).usableStock;
+
+    const supApprove = await request(app)
+      .post(`/api/stock-requests/${reqId}/review`)
+      .set('Authorization', `Bearer ${supervisorToken}`)
+      .send({
+        decision: 'PARTIAL_APPROVE',
+        approvedQuantity: 20,
+        remarks: 'Approved 20 kg for immediate dispatch',
+      });
+    expect(supApprove.status).toBe(200);
+    expect(supApprove.body.data.status).toBe('PARTIALLY_APPROVED');
+    expect(supApprove.body.data.approvedQuantity).toBe(20);
+
+    const invAfterApprove = await request(app)
+      .get(`/api/inventory/${vavdiCentreId}`)
+      .set('Authorization', `Bearer ${awwToken}`);
+    const dalAfterApprove = invAfterApprove.body.data.products.find((p: { productId: string }) => p.productId === dal.id).usableStock;
+    expect(dalAfterApprove).toBe(dalBefore);
+
+    // Supplier dispatches linked to stockRequestId
+    const dispatchReq = await request(app)
+      .post('/api/dispatches')
+      .set('Authorization', `Bearer ${supplierToken}`)
+      .send({
+        destinationCentreId: vavdiCentreId,
+        stockRequestId: reqId,
+        notes: 'Fulfilling approved Toor Dal request',
+        items: [
+          {
+            productId: dal.id,
+            batchNumber: `REQ-DAL-${Date.now()}`,
+            expiryDate: new Date(Date.now() + 120 * 86400000).toISOString(),
+            expectedQuantity: 20,
+          },
+        ],
+      });
+    expect(dispatchReq.status).toBe(201);
+
+    const reqMid = await request(app)
+      .get(`/api/stock-requests/${reqId}`)
+      .set('Authorization', `Bearer ${awwToken}`);
+    expect(reqMid.body.data.status).toBe('DISPATCHED');
+
+    // AWW receives dispatch -> StockRequest advances to COMPLETED
+    const dspItem = dispatchReq.body.data.items[0];
+    const recRes = await request(app)
+      .post(`/api/dispatches/${dispatchReq.body.data.id}/receipt`)
+      .set('Authorization', `Bearer ${awwToken}`)
+      .send({
+        idempotencyKey: `req-rec-${Date.now()}`,
+        items: [
+          {
+            productId: dal.id,
+            batchId: dspItem.batchId,
+            acceptedQuantity: 20,
+            damagedQuantity: 0,
+            missingQuantity: 0,
+          },
+        ],
+      });
+    expect(recRes.status).toBe(201);
+
+    const reqDone = await request(app)
+      .get(`/api/stock-requests/${reqId}`)
+      .set('Authorization', `Bearer ${awwToken}`);
+    expect(reqDone.body.data.status).toBe('COMPLETED');
   });
 });

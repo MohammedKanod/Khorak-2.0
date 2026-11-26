@@ -106,6 +106,37 @@ enum BeneficiaryStatus {
   REJECTED
 }
 
+enum AppealStatus {
+  DRAFT
+  SUBMITTED
+  AWAITING_SUPPLIER_RESPONSE
+  SUPPLIER_RESPONDED
+  UNDER_REVIEW
+  RESOLVED
+  REJECTED
+  ESCALATED
+}
+
+enum StockRequestReason {
+  LOW_STOCK
+  EXPECTED_DEMAND
+  DAMAGED_STOCK
+  OTHER
+}
+
+enum StockRequestStatus {
+  DRAFT
+  SUBMITTED
+  PENDING_APPROVAL
+  APPROVED
+  PARTIALLY_APPROVED
+  REJECTED
+  AWAITING_DISPATCH
+  DISPATCHED
+  RECEIVED
+  COMPLETED
+}
+
 enum NutritionIndicator {
   UNDERWEIGHT_PCT
   WASTING_PCT
@@ -153,14 +184,15 @@ model Sector {
 }
 
 model AnganwadiCentre {
-  id        String   @id @default(uuid()) @db.Uuid
-  sectorId  String   @db.Uuid
-  name      String
-  nameGu    String?
-  code      String   @unique
-  location  String
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
+  id                    String   @id @default(uuid()) @db.Uuid
+  sectorId              String   @db.Uuid
+  name                  String
+  nameGu                String?
+  code                  String   @unique
+  location              String
+  offlineCredentialSalt String?
+  isActive              Boolean  @default(true)
+  createdAt             DateTime @default(now())
 
   sector          Sector                 @relation(fields: [sectorId], references: [id])
   users           User[]
@@ -171,6 +203,8 @@ model AnganwadiCentre {
   spoilageReports SpoilageReport[]
   reconciliations Reconciliation[]
   alerts          Alert[]
+  dispatchAppeals DispatchAppeal[]
+  stockRequests   StockRequest[]
 
   @@index([sectorId])
 }
@@ -183,9 +217,10 @@ model Supplier {
   status             String   @default("ACTIVE")
   createdAt          DateTime @default(now())
 
-  users      User[]
-  batches    ProductBatch[]
-  dispatches Dispatch[]
+  users           User[]
+  batches         ProductBatch[]
+  dispatches      Dispatch[]
+  dispatchAppeals DispatchAppeal[]
 }
 
 model User {
@@ -223,6 +258,13 @@ model User {
   approvedReconciliations Reconciliation[]  @relation("ReconciliationApprovedBy")
   requestedBeneficiaries BeneficiaryReference[] @relation("BeneficiaryRequestedBy")
   reviewedBeneficiaries  BeneficiaryReference[] @relation("BeneficiaryReviewedBy")
+  createdAppeals         DispatchAppeal[]       @relation("AppealCreatedBy")
+  respondedAppeals       DispatchAppeal[]       @relation("AppealRespondedBy")
+  resolvedAppeals        DispatchAppeal[]       @relation("AppealResolvedBy")
+  appealHistoryEntries   DispatchAppealHistory[]
+  requestedStockRequests StockRequest[]         @relation("StockRequestRequestedBy")
+  reviewedStockRequests  StockRequest[]         @relation("StockRequestReviewedBy")
+  stockRequestHistory    StockRequestHistory[]
   approvals              Approval[]
   auditLogs              AuditLog[]
   syncOperations         SyncOperation[]
@@ -253,7 +295,7 @@ model BeneficiaryReference {
   localReference               String
   displayName                  String
   displayNameGu                String?
-  maskedIdLast4                String
+  maskedIdLast4                String?
   yob                          String?
   beneficiaryCategory          BeneficiaryCategory
   protectedCredentialReference String              @unique
@@ -262,6 +304,7 @@ model BeneficiaryReference {
   reviewedBy                   String?             @db.Uuid
   reviewRemarks                String?
   reviewedAt                   DateTime?
+  idempotencyKey               String?             @unique
   isActive                     Boolean             @default(true)
   createdAt                    DateTime            @default(now())
 
@@ -294,6 +337,8 @@ model Product {
   spoilageReports SpoilageReport[]
   reconciliations Reconciliation[]
   alerts          Alert[]
+  dispatchAppeals DispatchAppeal[]
+  stockRequests   StockRequest[]
 }
 
 model ProductBatch {
@@ -315,6 +360,7 @@ model ProductBatch {
   spoilageReports SpoilageReport[]
   reconciliations Reconciliation[]
   alerts          Alert[]
+  dispatchAppeals DispatchAppeal[]
 
   @@unique([productId, batchNumber, supplierId])
   @@index([productId, expiryDate])
@@ -325,6 +371,7 @@ model Dispatch {
   id                  String         @id @default(uuid()) @db.Uuid
   supplierId          String         @db.Uuid
   destinationCentreId String         @db.Uuid
+  stockRequestId      String?        @db.Uuid
   dispatchReference   String         @unique
   status              DispatchStatus @default(DISPATCHED)
   dispatchDate        DateTime
@@ -336,14 +383,17 @@ model Dispatch {
 
   supplier          Supplier          @relation(fields: [supplierId], references: [id])
   destinationCentre AnganwadiCentre   @relation(fields: [destinationCentreId], references: [id])
+  stockRequest      StockRequest?     @relation(fields: [stockRequestId], references: [id])
   creator           User              @relation("DispatchCreatedBy", fields: [createdBy], references: [id])
   items             DispatchItem[]
   deliveryReceipt   DeliveryReceipt?
   discrepancyCases  DiscrepancyCase[]
+  dispatchAppeals   DispatchAppeal[]
 
   @@index([supplierId])
   @@index([destinationCentreId])
   @@index([status])
+  @@index([stockRequestId])
 }
 
 model DispatchItem {
@@ -441,8 +491,8 @@ model Distribution {
   batch       ProductBatch         @relation(fields: [batchId], references: [id])
   worker      User                 @relation(fields: [distributedBy], references: [id])
 
+  @@unique([centreId, beneficiaryReferenceId, productId, distributionDay])
   @@index([centreId, distributedAt])
-  @@index([beneficiaryReferenceId, productId, distributionDay])
 }
 
 model SpoilageReport {
@@ -490,9 +540,115 @@ model DiscrepancyCase {
   dispatch        Dispatch         @relation(fields: [dispatchId], references: [id])
   deliveryReceipt DeliveryReceipt? @relation(fields: [deliveryReceiptId], references: [id])
   resolver        User?            @relation("DiscrepancyResolvedBy", fields: [resolvedBy], references: [id])
+  appeals         DispatchAppeal[]
 
   @@index([dispatchId])
   @@index([status])
+}
+
+model DispatchAppeal {
+  id                  String       @id @default(uuid()) @db.Uuid
+  appealReference     String       @unique
+  discrepancyCaseId   String       @db.Uuid
+  dispatchId          String       @db.Uuid
+  supplierId          String       @db.Uuid
+  centreId            String       @db.Uuid
+  productId           String?      @db.Uuid
+  batchId             String?      @db.Uuid
+  dispatchedQuantity  Float
+  receivedQuantity    Float
+  damagedQuantity     Float        @default(0)
+  missingQuantity     Float        @default(0)
+  evidenceUrl         String?
+  supervisorRemarks   String
+  supplierRemarks     String?
+  supplierEvidenceUrl String?
+  resolutionRemarks   String?
+  status              AppealStatus @default(AWAITING_SUPPLIER_RESPONSE)
+  createdBy           String       @db.Uuid
+  respondedBy         String?      @db.Uuid
+  resolvedBy          String?      @db.Uuid
+  respondedAt         DateTime?
+  resolvedAt          DateTime?
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+
+  discrepancyCase DiscrepancyCase         @relation(fields: [discrepancyCaseId], references: [id])
+  dispatch        Dispatch                @relation(fields: [dispatchId], references: [id])
+  supplier        Supplier                @relation(fields: [supplierId], references: [id])
+  centre          AnganwadiCentre         @relation(fields: [centreId], references: [id])
+  product         Product?                @relation(fields: [productId], references: [id])
+  batch           ProductBatch?           @relation(fields: [batchId], references: [id])
+  creator         User                    @relation("AppealCreatedBy", fields: [createdBy], references: [id])
+  responder       User?                   @relation("AppealRespondedBy", fields: [respondedBy], references: [id])
+  resolver        User?                   @relation("AppealResolvedBy", fields: [resolvedBy], references: [id])
+  history         DispatchAppealHistory[]
+
+  @@index([supplierId, status])
+  @@index([centreId, status])
+  @@index([discrepancyCaseId])
+}
+
+model DispatchAppealHistory {
+  id          String        @id @default(uuid()) @db.Uuid
+  appealId    String        @db.Uuid
+  actorId     String        @db.Uuid
+  fromStatus  AppealStatus?
+  toStatus    AppealStatus
+  action      String
+  remarks     String
+  evidenceUrl String?
+  createdAt   DateTime      @default(now())
+
+  appeal DispatchAppeal @relation(fields: [appealId], references: [id], onDelete: Cascade)
+  actor  User           @relation(fields: [actorId], references: [id])
+
+  @@index([appealId, createdAt])
+}
+
+model StockRequest {
+  id                String             @id @default(uuid()) @db.Uuid
+  requestNumber     String             @unique
+  centreId          String             @db.Uuid
+  productId         String             @db.Uuid
+  requestedQuantity Float
+  approvedQuantity  Float?
+  reason            StockRequestReason
+  remarks           String?
+  status            StockRequestStatus @default(PENDING_APPROVAL)
+  requestedBy       String             @db.Uuid
+  reviewedBy        String?            @db.Uuid
+  reviewRemarks     String?
+  reviewedAt        DateTime?
+  idempotencyKey    String             @unique
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  centre     AnganwadiCentre       @relation(fields: [centreId], references: [id])
+  product    Product               @relation(fields: [productId], references: [id])
+  requester  User                  @relation("StockRequestRequestedBy", fields: [requestedBy], references: [id])
+  reviewer   User?                 @relation("StockRequestReviewedBy", fields: [reviewedBy], references: [id])
+  dispatches Dispatch[]
+  history    StockRequestHistory[]
+
+  @@index([centreId, status])
+  @@index([status])
+}
+
+model StockRequestHistory {
+  id             String              @id @default(uuid()) @db.Uuid
+  stockRequestId String              @db.Uuid
+  actorId        String              @db.Uuid
+  fromStatus     StockRequestStatus?
+  toStatus       StockRequestStatus
+  action         String
+  remarks        String
+  createdAt      DateTime            @default(now())
+
+  stockRequest StockRequest @relation(fields: [stockRequestId], references: [id], onDelete: Cascade)
+  actor        User         @relation(fields: [actorId], references: [id])
+
+  @@index([stockRequestId, createdAt])
 }
 
 model Reconciliation {

@@ -17,6 +17,7 @@ import {
   requireRoles,
 } from '../middleware/auth';
 import {
+  acquireStockLock,
   allocateFefoBatches,
   getCentreBatchBalances,
   getCentreInventorySummary,
@@ -339,6 +340,7 @@ inventoryRouter.post(
       }
 
       const events = await prisma.$transaction(async (tx) => {
+        await acquireStockLock(tx, centreId, parsed.productId);
         const allocations = await allocateFefoBatches(tx, {
           centreId,
           productId: parsed.productId,
@@ -533,6 +535,17 @@ inventoryRouter.post(
         parsed.autoApprove === true;
 
       const reconciliation = await prisma.$transaction(async (tx) => {
+        if (canApproveImmediately && variance !== 0) {
+          await acquireStockLock(tx, centreId, parsed.productId);
+          const lockedBatches = await getCentreBatchBalances(centreId, tx, {
+            productId: parsed.productId,
+            includeZero: true,
+          });
+          const lockedTarget = lockedBatches.find((b) => b.batchId === parsed.batchId);
+          if (!lockedTarget || roundQty(lockedTarget.balance + variance) < 0) {
+            throw new AppError(409, 'NEGATIVE_STOCK_PREVENTED', 'Reconciliation adjustment would drive batch balance negative');
+          }
+        }
         const created = await tx.reconciliation.create({
           data: {
             centreId,

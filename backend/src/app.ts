@@ -11,6 +11,8 @@ import { approvalRouter, discrepancyRouter } from './routes/discrepancy.routes';
 import { beneficiaryRouter, distributionRouter } from './routes/distribution.routes';
 import { analyticsRouter } from './routes/analytics.routes';
 import { syncRouter } from './routes/sync.routes';
+import { appealsRouter } from './routes/appeals.routes';
+import { stockRequestsRouter } from './routes/stockRequests.routes';
 import { prisma } from './lib/prisma';
 
 export function createApp() {
@@ -46,7 +48,7 @@ export function createApp() {
 
   app.use('/uploads', express.static(path.resolve(env.uploadDir)));
 
-  app.get('/health', async (_req, res) => {
+  app.get(['/health', '/api/health'], async (_req, res) => {
     try {
       await prisma.$queryRaw`SELECT 1`;
       res.json({
@@ -79,6 +81,8 @@ export function createApp() {
   app.use('/api/approvals', approvalRouter);
   app.use('/api/distributions', distributionRouter);
   app.use('/api/beneficiaries', beneficiaryRouter);
+  app.use('/api/appeals', appealsRouter);
+  app.use('/api/stock-requests', stockRequestsRouter);
   app.use('/api/sync', syncRouter);
   app.use('/api', analyticsRouter);
 

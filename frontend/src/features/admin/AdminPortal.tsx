@@ -11,7 +11,9 @@ import {
   LayoutDashboard,
   LogOut,
   Package,
+  PackagePlus,
   Search,
+  Send,
   TrendingUp,
   Truck,
   UserCheck,
@@ -30,15 +32,17 @@ import {
 } from 'recharts';
 import { useAuth } from '../../contexts/AuthContext';
 import { useI18n } from '../../locales/translations';
-import { apiRequest } from '../../lib/api';
+import { apiRequest, apiUrl } from '../../lib/api';
 import {
   AlertItem,
   BeneficiaryReference,
   DiscrepancyCase,
+  DispatchAppeal,
   DispatchRecord,
   ProductInventorySummary,
   ReconciliationRecord,
   SpoilageRecord,
+  StockRequest,
 } from '../../types';
 import {
   EmptyState,
@@ -52,6 +56,7 @@ type AdminTab =
   | 'overview'
   | 'centres'
   | 'inventory'
+  | 'stockRequests'
   | 'discrepancies'
   | 'reconciliation'
   | 'beneficiaries'
@@ -190,6 +195,8 @@ export function AdminPortal() {
           supplierPerf: typeof supplierPerf;
           distAnalytics: NonNullable<typeof distAnalytics>;
           beneficiaries: BeneficiaryReference[];
+          appeals?: DispatchAppeal[];
+          stockRequests?: StockRequest[];
         };
       }>('/api/dashboard/admin-bundle');
 
@@ -203,6 +210,8 @@ export function AdminPortal() {
       setSupplierPerf(bundle.supplierPerf);
       setDistAnalytics(bundle.distAnalytics);
       setBeneficiaries(bundle.beneficiaries);
+      setAppeals(bundle.appeals || []);
+      setStockRequests(bundle.stockRequests || []);
 
       if (bundle.metrics.centres.length > 0 && !reconCentreId) {
         const firstC = bundle.metrics.centres[0];
@@ -226,6 +235,87 @@ export function AdminPortal() {
   useEffect(() => {
     loadDashboard();
   }, [role]);
+
+  const [appeals, setAppeals] = useState<DispatchAppeal[]>([]);
+  const [stockRequests, setStockRequests] = useState<StockRequest[]>([]);
+  const [createAppealDisc, setCreateAppealDisc] = useState<DiscrepancyCase | null>(null);
+  const [appealRemarksInput, setAppealRemarksInput] = useState('');
+  const [appealFile, setAppealFile] = useState<File | null>(null);
+  const [reviewAppealTarget, setReviewAppealTarget] = useState<DispatchAppeal | null>(null);
+  const [appealDecision, setAppealDecision] = useState<'RESOLVED' | 'REJECTED' | 'ESCALATED' | 'UNDER_REVIEW'>('RESOLVED');
+  const [appealDecisionRemarks, setAppealDecisionRemarks] = useState('');
+  const [reviewReqTarget, setReviewReqTarget] = useState<StockRequest | null>(null);
+  const [reqDecision, setReqDecision] = useState<'APPROVE' | 'PARTIAL_APPROVE' | 'REJECT'>('APPROVE');
+  const [reqApprovedQty, setReqApprovedQty] = useState('');
+  const [reqReviewRemarks, setReqReviewRemarks] = useState('');
+
+  async function submitCreateAppeal(e: React.FormEvent) {
+    e.preventDefault();
+    if (!createAppealDisc) return;
+    setSubmitting(true);
+    try {
+      const form = new FormData();
+      form.append('discrepancyCaseId', createAppealDisc.id);
+      form.append('supervisorRemarks', appealRemarksInput);
+      form.append('submitImmediately', 'true');
+      if (appealFile) form.append('evidence', appealFile);
+      await apiRequest('/api/appeals', { method: 'POST', body: form });
+      setCreateAppealDisc(null);
+      setAppealRemarksInput('');
+      setAppealFile(null);
+      await loadDashboard();
+      setBanner({ type: 'success', text: 'Formal appeal submitted to Supplier.' });
+    } catch (err) {
+      setBanner({ type: 'error', text: err instanceof Error ? err.message : 'Appeal submission failed' });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function submitAppealReview(e: React.FormEvent) {
+    e.preventDefault();
+    if (!reviewAppealTarget) return;
+    setSubmitting(true);
+    try {
+      await apiRequest(`/api/appeals/${reviewAppealTarget.id}/review`, {
+        method: 'POST',
+        body: JSON.stringify({ decision: appealDecision, remarks: appealDecisionRemarks }),
+      });
+      setReviewAppealTarget(null);
+      setAppealDecisionRemarks('');
+      await loadDashboard();
+      setBanner({ type: 'success', text: `Appeal ${reviewAppealTarget.appealReference} updated (${appealDecision}).` });
+    } catch (err) {
+      setBanner({ type: 'error', text: err instanceof Error ? err.message : 'Appeal review failed' });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function submitStockRequestReview(e: React.FormEvent) {
+    e.preventDefault();
+    if (!reviewReqTarget) return;
+    setSubmitting(true);
+    try {
+      await apiRequest(`/api/stock-requests/${reviewReqTarget.id}/review`, {
+        method: 'POST',
+        body: JSON.stringify({
+          decision: reqDecision,
+          ...(reqDecision !== 'REJECT' && reqApprovedQty ? { approvedQuantity: Number(reqApprovedQty) } : {}),
+          remarks: reqReviewRemarks,
+        }),
+      });
+      setReviewReqTarget(null);
+      setReqApprovedQty('');
+      setReqReviewRemarks('');
+      await loadDashboard();
+      setBanner({ type: 'success', text: `Stock request ${reviewReqTarget.requestNumber} updated (${reqDecision}).` });
+    } catch (err) {
+      setBanner({ type: 'error', text: err instanceof Error ? err.message : 'Stock request review failed' });
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
   async function submitDiscrepancyReview(e: React.FormEvent) {
     e.preventDefault();
@@ -359,6 +449,7 @@ export function AdminPortal() {
           { id: 'overview', label: t('navDashboard'), icon: LayoutDashboard },
           { id: 'centres', label: 'Centres', icon: Building2 },
           { id: 'inventory', label: t('navInventory'), icon: Package },
+          { id: 'stockRequests', label: 'Stock Requests', icon: PackagePlus },
           { id: 'beneficiaries', label: 'Beneficiary Approvals', icon: UserCheck },
           { id: 'discrepancies', label: t('navDiscrepancies'), icon: FileWarning },
           { id: 'reconciliation', label: t('navReconciliation'), icon: ClipboardCheck },
@@ -368,6 +459,7 @@ export function AdminPortal() {
         ? [
             { id: 'overview', label: t('navDashboard'), icon: LayoutDashboard },
             { id: 'centres', label: 'Centres', icon: Building2 },
+            { id: 'stockRequests', label: 'Stock Requests', icon: PackagePlus },
             { id: 'beneficiaries', label: 'Beneficiaries', icon: UserCheck },
             { id: 'alerts', label: t('navAlerts'), icon: AlertTriangle },
             { id: 'suppliers', label: 'Suppliers', icon: Truck },
@@ -386,6 +478,7 @@ export function AdminPortal() {
                 { id: 'overview', label: t('navDashboard'), icon: LayoutDashboard },
                 { id: 'centres', label: 'Block Comparison', icon: Building2 },
                 { id: 'inventory', label: t('navInventory'), icon: Package },
+                { id: 'stockRequests', label: 'Stock Requests', icon: PackagePlus },
                 { id: 'alerts', label: 'Stockout Reports', icon: AlertTriangle },
                 { id: 'expiry', label: 'Expiry Reports', icon: Clock },
                 { id: 'reports', label: t('navReports'), icon: Download },
@@ -395,6 +488,7 @@ export function AdminPortal() {
                 { id: 'overview', label: 'District Overview', icon: LayoutDashboard },
                 { id: 'centres', label: 'Block Performance', icon: Building2 },
                 { id: 'inventory', label: 'Inventory Trends', icon: Package },
+                { id: 'stockRequests', label: 'Stock Requests', icon: PackagePlus },
                 { id: 'malnutrition', label: 'Malnutrition Trends', icon: TrendingUp },
                 { id: 'discrepancies', label: t('navDiscrepancies'), icon: FileWarning },
                 { id: 'reports', label: t('navReports'), icon: Download },
@@ -765,69 +859,261 @@ export function AdminPortal() {
                 </div>
               )}
 
-              {/* DISCREPANCIES */}
-              {tab === 'discrepancies' && (
+              {/* STOCK REQUESTS */}
+              {tab === 'stockRequests' && (
                 <div className="k-card p-5">
-                  <h2 className="mb-4 text-base font-bold">
-                    Delivery Discrepancy Queue ({discrepancies.length})
-                  </h2>
-                  {discrepancies.length === 0 ? (
+                  <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h2 className="text-base font-bold">
+                        Anganwadi Stock Replenishment Requests ({stockRequests.length})
+                      </h2>
+                      <p className="text-xs text-[var(--text-secondary)]">
+                        Approving a request authorizes Supplier dispatch — inventory only increases when AWW confirms physical receipt.
+                      </p>
+                    </div>
+                    <StatusBadge
+                      variant={
+                        stockRequests.some((r) => r.status === 'PENDING_APPROVAL' || r.status === 'SUBMITTED')
+                          ? 'warning'
+                          : 'normal'
+                      }
+                    >
+                      {stockRequests.filter((r) => r.status === 'PENDING_APPROVAL' || r.status === 'SUBMITTED').length} Pending
+                    </StatusBadge>
+                  </div>
+                  {stockRequests.length === 0 ? (
                     <EmptyState
-                      title="No discrepancy cases"
-                      description="All supplier dispatches matched AWW physical receipt counts."
+                      title="No stock requests"
+                      description="Stock replenishment requests submitted by Anganwadi Workers appear here."
                     />
                   ) : (
                     <div className="space-y-3">
-                      {discrepancies.map((c) => (
-                        <div
-                          key={c.id}
-                          className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--border)] p-4 text-sm"
-                        >
-                          <div>
-                            <div className="flex items-center gap-2">
-                              <span className="font-mono-num font-bold">
-                                {c.dispatch?.dispatchReference}
-                              </span>
-                              <StatusBadge
-                                variant={
-                                  c.status === 'RESOLVED' || c.status === 'APPROVED'
-                                    ? 'normal'
-                                    : 'critical'
-                                }
-                              >
-                                {c.status}
-                              </StatusBadge>
-                            </div>
-                            <p className="mt-1 text-xs text-[var(--text-secondary)]">
-                              {c.dispatch?.destinationCentre?.name} • Supplier: {c.dispatch?.supplier?.name}
-                            </p>
-                            <p className="font-mono-num mt-1 text-xs">
-                              Expected: {c.expectedQuantity} | Accepted: {c.actualQuantity} | Damaged:{' '}
-                              {c.damagedQuantity} | Missing: {c.missingQuantity} (Diff: {c.difference})
-                            </p>
-                            {c.resolutionRemarks && (
-                              <p className="mt-1 text-xs italic text-[var(--accent)]">
-                                Remarks: {c.resolutionRemarks}
+                      {stockRequests.map((sr) => {
+                        const isPending = sr.status === 'PENDING_APPROVAL' || sr.status === 'SUBMITTED';
+                        return (
+                          <div
+                            key={sr.id}
+                            className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--border)] p-4 text-sm"
+                          >
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono-num font-bold">{sr.requestNumber}</span>
+                                <StatusBadge
+                                  variant={
+                                    sr.status === 'COMPLETED' || sr.status === 'APPROVED' || sr.status === 'PARTIALLY_APPROVED'
+                                      ? 'normal'
+                                      : sr.status === 'REJECTED'
+                                        ? 'critical'
+                                        : 'warning'
+                                  }
+                                >
+                                  {sr.status}
+                                </StatusBadge>
+                              </div>
+                              <p className="mt-1 text-xs text-[var(--text-secondary)]">
+                                {sr.centre?.name} ({sr.centre?.code}) • {sr.product?.name} • Requested:{' '}
+                                <span className="font-mono-num font-bold">
+                                  {sr.requestedQuantity} {sr.product?.unit}
+                                </span>
+                                {sr.approvedQuantity != null && (
+                                  <>
+                                    {' '}
+                                    | Approved:{' '}
+                                    <span className="font-mono-num font-bold text-[var(--accent)]">
+                                      {sr.approvedQuantity} {sr.product?.unit}
+                                    </span>
+                                  </>
+                                )}
                               </p>
+                              <p className="mt-0.5 text-xs text-[var(--text-muted)]">
+                                Reason: {sr.reason} {sr.remarks ? `— ${sr.remarks}` : ''}
+                              </p>
+                              {sr.reviewRemarks && (
+                                <p className="mt-0.5 text-xs italic text-[var(--accent)]">
+                                  Review: {sr.reviewRemarks}
+                                </p>
+                              )}
+                            </div>
+                            {isPending && (role === 'SUPERVISOR' || role === 'CDPO' || role === 'DPO' || role === 'DDO') && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setReviewReqTarget(sr);
+                                  setReqDecision('APPROVE');
+                                  setReqApprovedQty(String(sr.requestedQuantity));
+                                  setReqReviewRemarks('Approved for supplier dispatch');
+                                }}
+                                className="k-btn-primary min-h-[38px] px-3 py-1.5 text-xs"
+                              >
+                                Review Request
+                              </button>
                             )}
                           </div>
-                          {(role === 'SUPERVISOR' || role === 'CDPO' || role === 'DPO' || role === 'DDO') && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setReviewCase(c);
-                                setReviewAction('RESOLVE');
-                                setReviewRemarks(c.resolutionRemarks || '');
-                              }}
-                              className="k-btn-primary min-h-[38px] px-3 py-1.5 text-xs"
-                            >
-                              Review / Resolve
-                            </button>
-                          )}
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
+                </div>
+              )}
+
+              {/* DISCREPANCIES */}
+              {tab === 'discrepancies' && (
+                <div className="space-y-4">
+                  <div className="k-card p-5">
+                    <h2 className="mb-4 text-base font-bold">
+                      Delivery Discrepancy Queue ({discrepancies.length})
+                    </h2>
+                    {discrepancies.length === 0 ? (
+                      <EmptyState
+                        title="No discrepancy cases"
+                        description="All supplier dispatches matched AWW physical receipt counts."
+                      />
+                    ) : (
+                      <div className="space-y-3">
+                        {discrepancies.map((c) => (
+                          <div
+                            key={c.id}
+                            className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--border)] p-4 text-sm"
+                          >
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono-num font-bold">
+                                  {c.dispatch?.dispatchReference}
+                                </span>
+                                <StatusBadge
+                                  variant={
+                                    c.status === 'RESOLVED' || c.status === 'APPROVED'
+                                      ? 'normal'
+                                      : 'critical'
+                                  }
+                                >
+                                  {c.status}
+                                </StatusBadge>
+                              </div>
+                              <p className="mt-1 text-xs text-[var(--text-secondary)]">
+                                {c.dispatch?.destinationCentre?.name} • Supplier: {c.dispatch?.supplier?.name}
+                              </p>
+                              <p className="font-mono-num mt-1 text-xs">
+                                Expected: {c.expectedQuantity} | Accepted: {c.actualQuantity} | Damaged:{' '}
+                                {c.damagedQuantity} | Missing: {c.missingQuantity} (Diff: {c.difference})
+                              </p>
+                              {c.resolutionRemarks && (
+                                <p className="mt-1 text-xs italic text-[var(--accent)]">
+                                  Remarks: {c.resolutionRemarks}
+                                </p>
+                              )}
+                            </div>
+                            <div className="flex flex-wrap items-center gap-2">
+                              {(role === 'SUPERVISOR' || role === 'CDPO') && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setCreateAppealDisc(c);
+                                    setAppealRemarksInput('');
+                                    setAppealFile(null);
+                                  }}
+                                  className="k-btn-saffron min-h-[38px] px-3 py-1.5 text-xs"
+                                >
+                                  <Send className="h-3.5 w-3.5" /> Raise Appeal
+                                </button>
+                              )}
+                              {(role === 'SUPERVISOR' || role === 'CDPO' || role === 'DPO' || role === 'DDO') && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setReviewCase(c);
+                                    setReviewAction('RESOLVE');
+                                    setReviewRemarks(c.resolutionRemarks || '');
+                                  }}
+                                  className="k-btn-primary min-h-[38px] px-3 py-1.5 text-xs"
+                                >
+                                  Review / Resolve
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Supervisor <-> Supplier Dispatch Appeals */}
+                  <div className="k-card p-5">
+                    <h2 className="mb-4 text-base font-bold">
+                      Supplier Dispatch Appeals ({appeals.length})
+                    </h2>
+                    {appeals.length === 0 ? (
+                      <EmptyState
+                        title="No dispatch appeals yet"
+                        description="Raise a formal appeal from any delivery discrepancy above to request supplier clarification."
+                      />
+                    ) : (
+                      <div className="space-y-3">
+                        {appeals.map((a) => (
+                          <div
+                            key={a.id}
+                            className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--border)] p-4 text-sm"
+                          >
+                            <div className="max-w-2xl">
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono-num font-bold">{a.appealReference}</span>
+                                <StatusBadge
+                                  variant={
+                                    a.status === 'RESOLVED'
+                                      ? 'normal'
+                                      : a.status === 'ESCALATED' || a.status === 'REJECTED'
+                                        ? 'critical'
+                                        : 'warning'
+                                  }
+                                >
+                                  {a.status}
+                                </StatusBadge>
+                              </div>
+                              <p className="mt-1 text-xs text-[var(--text-secondary)]">
+                                {a.centre?.name} • {a.dispatch?.dispatchReference} • Supplier: {a.supplier?.name}
+                              </p>
+                              <p className="mt-1 text-xs">
+                                <span className="font-semibold">Supervisor:</span> {a.supervisorRemarks}
+                              </p>
+                              {a.supplierRemarks && (
+                                <p className="mt-1 text-xs text-[var(--accent)]">
+                                  <span className="font-semibold">Supplier Reply:</span> {a.supplierRemarks}
+                                </p>
+                              )}
+                              {a.supplierEvidenceUrl && (
+                                <a
+                                  href={apiUrl(a.supplierEvidenceUrl)}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="mt-1 inline-block text-xs font-semibold text-[var(--accent)] underline"
+                                >
+                                  View Supplier Evidence
+                                </a>
+                              )}
+                              {a.resolutionRemarks && (
+                                <p className="mt-1 text-xs italic text-[var(--text-secondary)]">
+                                  Decision: {a.resolutionRemarks}
+                                </p>
+                              )}
+                            </div>
+                            {(role === 'SUPERVISOR' || role === 'CDPO' || role === 'DPO' || role === 'DDO') && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setReviewAppealTarget(a);
+                                  setAppealDecision('RESOLVED');
+                                  setAppealDecisionRemarks('');
+                                }}
+                                className="k-btn-primary min-h-[38px] px-3 py-1.5 text-xs"
+                              >
+                                Update Appeal Status
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -1031,8 +1317,8 @@ export function AdminPortal() {
                               </StatusBadge>
                             </div>
                             <p className="font-mono-num mt-1 text-xs text-[var(--text-secondary)]">
-                              {b.centre?.name} ({b.centre?.code}) • {b.localReference} • Masked: ****
-                              {b.maskedIdLast4} • YOB {b.yob || '—'} • {b.beneficiaryCategory}
+                              {b.centre?.name} ({b.centre?.code}) • {b.localReference} • YOB{' '}
+                              {b.yob || '—'} • {b.beneficiaryCategory}
                             </p>
                             {b.requester && (
                               <p className="mt-0.5 text-xs text-[var(--text-muted)]">
@@ -1522,6 +1808,170 @@ export function AdminPortal() {
             </button>
             <button type="submit" disabled={submitting} className="k-btn-primary flex-1">
               {submitting ? t('loading') : 'Confirm'}
+            </button>
+          </div>
+        </form>
+      </ModalDialog>
+
+      {/* Raise Appeal to Supplier Modal */}
+      <ModalDialog
+        open={Boolean(createAppealDisc)}
+        onClose={() => setCreateAppealDisc(null)}
+        title="Raise Appeal to Supplier"
+        subtitle={createAppealDisc?.dispatch?.dispatchReference}
+      >
+        <form onSubmit={submitCreateAppeal} className="space-y-4">
+          <div>
+            <label className="mb-1 block text-xs font-semibold">Supervisor Appeal Statement</label>
+            <textarea
+              rows={3}
+              value={appealRemarksInput}
+              onChange={(e) => setAppealRemarksInput(e.target.value)}
+              className="k-textarea"
+              required
+              minLength={5}
+              placeholder="Detail shortage/damage claim for formal Supplier response..."
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-semibold">Attachment Evidence (Optional)</label>
+            <input
+              type="file"
+              accept="image/*,application/pdf"
+              onChange={(e) => setAppealFile(e.target.files?.[0] || null)}
+              className="k-input py-2 text-xs"
+            />
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setCreateAppealDisc(null)}
+              className="k-btn-secondary flex-1"
+            >
+              {t('cancel')}
+            </button>
+            <button type="submit" disabled={submitting} className="k-btn-saffron flex-1">
+              {submitting ? t('loading') : 'Submit Appeal'}
+            </button>
+          </div>
+        </form>
+      </ModalDialog>
+
+      {/* Review Supplier Appeal Modal */}
+      <ModalDialog
+        open={Boolean(reviewAppealTarget)}
+        onClose={() => setReviewAppealTarget(null)}
+        title="Update Dispatch Appeal Status"
+        subtitle={reviewAppealTarget?.appealReference}
+      >
+        <form onSubmit={submitAppealReview} className="space-y-4">
+          <div>
+            <label className="mb-1 block text-xs font-semibold">Decision</label>
+            <select
+              value={appealDecision}
+              onChange={(e) =>
+                setAppealDecision(
+                  e.target.value as 'RESOLVED' | 'REJECTED' | 'ESCALATED' | 'UNDER_REVIEW'
+                )
+              }
+              className="k-select"
+            >
+              <option value="UNDER_REVIEW">Mark Under Review</option>
+              <option value="RESOLVED">Resolve Appeal</option>
+              <option value="ESCALATED">Escalate to District Authority</option>
+              <option value="REJECTED">Close / Reject Claim</option>
+            </select>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-semibold">Resolution / Escalation Remarks</label>
+            <textarea
+              rows={3}
+              value={appealDecisionRemarks}
+              onChange={(e) => setAppealDecisionRemarks(e.target.value)}
+              className="k-textarea"
+              required
+              minLength={3}
+            />
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setReviewAppealTarget(null)}
+              className="k-btn-secondary flex-1"
+            >
+              {t('cancel')}
+            </button>
+            <button type="submit" disabled={submitting} className="k-btn-primary flex-1">
+              {submitting ? t('loading') : 'Save Decision'}
+            </button>
+          </div>
+        </form>
+      </ModalDialog>
+
+      {/* Review Stock Request Modal */}
+      <ModalDialog
+        open={Boolean(reviewReqTarget)}
+        onClose={() => setReviewReqTarget(null)}
+        title="Review Stock Request"
+        subtitle={
+          reviewReqTarget
+            ? `${reviewReqTarget.requestNumber} • ${reviewReqTarget.product?.name} (${reviewReqTarget.requestedQuantity} ${reviewReqTarget.product?.unit})`
+            : undefined
+        }
+      >
+        <form onSubmit={submitStockRequestReview} className="space-y-4">
+          <div>
+            <label className="mb-1 block text-xs font-semibold">Decision</label>
+            <select
+              value={reqDecision}
+              onChange={(e) =>
+                setReqDecision(e.target.value as 'APPROVE' | 'PARTIAL_APPROVE' | 'REJECT')
+              }
+              className="k-select"
+            >
+              <option value="APPROVE">Approve Full Requested Quantity</option>
+              <option value="PARTIAL_APPROVE">Partially Approve Custom Quantity</option>
+              <option value="REJECT">Reject Request</option>
+            </select>
+          </div>
+          {reqDecision !== 'REJECT' && (
+            <div>
+              <label className="mb-1 block text-xs font-semibold">
+                Approved Quantity ({reviewReqTarget?.product?.unit})
+              </label>
+              <input
+                type="number"
+                step="0.5"
+                min="0.5"
+                max={reviewReqTarget?.requestedQuantity}
+                value={reqApprovedQty}
+                onChange={(e) => setReqApprovedQty(e.target.value)}
+                className="k-input"
+                required={reqDecision === 'PARTIAL_APPROVE'}
+              />
+            </div>
+          )}
+          <div>
+            <label className="mb-1 block text-xs font-semibold">Supervisor Remarks</label>
+            <textarea
+              rows={3}
+              value={reqReviewRemarks}
+              onChange={(e) => setReqReviewRemarks(e.target.value)}
+              className="k-textarea"
+              required
+              minLength={3}
+            />
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setReviewReqTarget(null)}
+              className="k-btn-secondary flex-1"
+            >
+              {t('cancel')}
+            </button>
+            <button type="submit" disabled={submitting} className="k-btn-primary flex-1">
+              {submitting ? t('loading') : 'Confirm Decision'}
             </button>
           </div>
         </form>

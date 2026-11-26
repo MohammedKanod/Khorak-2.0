@@ -21,27 +21,23 @@ KHORAK will use a modular client-server architecture.
 **Authentication:** JWT-based authentication.  
 **QR Processing:** Local Aadhaar Offline XML QR processing.
 
-### 1.2 Recommended Technology Stack
+### 1.2 Actual Technology Stack
 
 | Layer | Technology |
 |---|---|
-| Frontend | React 18 + TypeScript |
-| Build Tool | Vite |
-| Styling | Tailwind CSS |
-| UI Components | shadcn/ui |
-| Icons | Lucide |
-| Charts | Recharts |
-| Routing | React Router |
-| API Client | Fetch / Axios |
-| Backend | Node.js + Express + TypeScript |
-| ORM | Prisma |
-| Database | PostgreSQL |
-| Offline Storage | Dexie.js + IndexedDB |
-| PWA | Service Worker |
-| Authentication | JWT + bcrypt |
-| Validation | Zod |
-| QR Scanning | Browser camera-based QR scanner |
-| Testing | Vitest + Supertest + Playwright |
+| Frontend | React 19 (`^19.3.1`) + TypeScript (`^7.0.2`) |
+| Mobile Packaging | Capacitor 8 (`@capacitor/core@^8.6.3`, `@capacitor/android@^8.6.3`) |
+| Build Tool | Vite (`vite@^8.3.8`, `@vitejs/plugin-react@^6.3.0`) |
+| Styling | Tailwind CSS v4 (`@tailwindcss/vite@^4.3.5`) |
+| Icons & Charts | Lucide (`lucide-react@^1.80.0`) + Recharts (`^3.11.1`) |
+| Routing & Client | React Router (`^7.18.7`) + Native Fetch API |
+| Backend | Node.js + Express 5 (`^5.3.0`) + TypeScript |
+| ORM & Database | Prisma (`^6.19.3`) + PostgreSQL |
+| Offline Storage | Dexie.js (`^4.4.7`) + IndexedDB + Service Worker (`vite-plugin-pwa@^2.0.0`) |
+| Authentication | JWT (`jsonwebtoken@^9.0.3`) + `bcryptjs@^3.0.3` |
+| Validation | Zod (`^4.6.7`) |
+| QR Scanning | Direct camera stream + `jsqr@^1.4.0` + `qrcode@^1.5.4` + Web Crypto HMAC-SHA256 |
+| Testing | Vitest (`^5.1.1`) + Supertest (`^7.3.2`) |
 
 The stack should remain modular. Additional libraries should only be introduced when they solve a defined requirement.
 
@@ -311,10 +307,14 @@ Use REST APIs with consistent response structures.
 - GET /api/analytics/suppliers
 - GET /api/analytics/nutrition
 
+- `POST /api/appeals`, `GET /api/appeals`, `POST /api/appeals/:id/submit`, `POST /api/appeals/:id/respond`, `POST /api/appeals/:id/review`
+- `POST /api/stock-requests`, `GET /api/stock-requests`, `GET /api/stock-requests/:id`, `POST /api/stock-requests/:id/review`
+
 ### 5.7 Synchronisation
-- POST /api/sync/push
-- GET /api/sync/pull
+- POST /api/sync/push (`CREATE_BENEFICIARY`, single & multi-item `DISTRIBUTION`, `CONSUMPTION`, `SPOILAGE`, `RECEIVE_DISPATCH`, `CREATE_STOCK_REQUEST`)
+- GET /api/sync/pull (includes `offlineCredentialSalt` and `stockRequests`)
 - GET /api/sync/status
+- GET /health & GET /api/health
 
 All endpoints must enforce authentication, role permissions, and organisational data scope on the backend.
 
@@ -386,14 +386,13 @@ Use database transactions and appropriate concurrency controls to prevent overse
 - Display a minimal confirmation screen.
 - Avoid transmitting raw credential content to the backend or third-party services.
 
-### 7.2 Security Requirements
+### 7.2 Security & Privacy Requirements
 
-- Do not store raw Aadhaar XML unnecessarily.
-- Do not log QR contents or sensitive identity data.
-- Avoid displaying full Aadhaar numbers.
-- Protect local temporary data.
+- Never store or log raw Aadhaar XML or full/partial/last-4 Aadhaar digits.
+- Derive per-centre salted HMAC-SHA256 `protectedCredentialReference` locally (`khorak-offline-v2|<name>|<yob>|<last4>` keyed by centre `offlineCredentialSalt`).
+- Do not display raw or masked Aadhaar digits anywhere in the UI, logs, notifications, or API payloads.
 - Do not use Aadhaar credentials as passwords or authentication tokens.
-- Do not claim UIDAI authentication or verification unless an authorised verification mechanism is actually implemented.
+- Explicitly disclose that offline XML credential mapping is distinct from live UIDAI authentication.
 - Use synthetic credentials for development and demonstrations.
 
 Implementation must be checked against the supported UIDAI credential format and applicable legal and operational requirements before production use.

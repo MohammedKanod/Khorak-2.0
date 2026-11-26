@@ -1,4 +1,8 @@
-import React, { Suspense, lazy } from 'react';
+import React, { Suspense, lazy, useEffect } from 'react';
+import { Capacitor } from '@capacitor/core';
+import { App as CapApp } from '@capacitor/app';
+import { StatusBar, Style } from '@capacitor/status-bar';
+import { SplashScreen } from '@capacitor/splash-screen';
 import { useAuth } from './contexts/AuthContext';
 import { LoginPage } from './features/auth/LoginPage';
 import { LoadingSkeleton } from './components/ui';
@@ -25,6 +29,25 @@ function PageFallback() {
 
 export function App() {
   const { user, loading } = useAuth();
+
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    StatusBar.setStyle({ style: Style.Dark }).catch(() => undefined);
+    StatusBar.setBackgroundColor({ color: '#1B4332' }).catch(() => undefined);
+    SplashScreen.hide().catch(() => undefined);
+
+    const listenerPromise = CapApp.addListener('backButton', ({ canGoBack }) => {
+      if (canGoBack) {
+        window.history.back();
+      } else {
+        CapApp.minimizeApp().catch(() => undefined);
+      }
+    });
+
+    return () => {
+      listenerPromise.then((h) => h.remove()).catch(() => undefined);
+    };
+  }, []);
 
   if (loading) {
     return <PageFallback />;

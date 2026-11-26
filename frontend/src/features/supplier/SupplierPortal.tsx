@@ -3,21 +3,30 @@ import {
   AlertTriangle,
   CheckCircle2,
   ClipboardList,
+  FileWarning,
   LayoutDashboard,
   LogOut,
+  PackagePlus,
   Plus,
   PlusCircle,
+  Send,
   Trash2,
   Truck,
   User,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useI18n } from '../../locales/translations';
-import { apiRequest } from '../../lib/api';
-import { DiscrepancyCase, DispatchRecord, Product } from '../../types';
-import { EmptyState, KpiCard, LoadingSkeleton, StatusBadge } from '../../components/ui';
+import { apiRequest, apiUrl } from '../../lib/api';
+import {
+  DiscrepancyCase,
+  DispatchAppeal,
+  DispatchRecord,
+  Product,
+  StockRequest,
+} from '../../types';
+import { EmptyState, KpiCard, LoadingSkeleton, ModalDialog, StatusBadge } from '../../components/ui';
 
-type SupplierTab = 'dashboard' | 'create' | 'history' | 'status' | 'profile';
+type SupplierTab = 'dashboard' | 'create' | 'appeals' | 'history' | 'status' | 'profile';
 
 interface TargetCentre {
   id: string;
@@ -36,12 +45,15 @@ export function SupplierPortal() {
   const [loading, setLoading] = useState(true);
   const [dispatches, setDispatches] = useState<DispatchRecord[]>([]);
   const [discrepancies, setDiscrepancies] = useState<DiscrepancyCase[]>([]);
+  const [appeals, setAppeals] = useState<DispatchAppeal[]>([]);
+  const [stockRequests, setStockRequests] = useState<StockRequest[]>([]);
   const [centres, setCentres] = useState<TargetCentre[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [banner, setBanner] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   // Create dispatch state
   const [destinationCentreId, setDestinationCentreId] = useState('');
+  const [linkedStockRequestId, setLinkedStockRequestId] = useState<string | null>(null);
   const [dispatchDate, setDispatchDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [notes, setNotes] = useState('');
   const [evidenceFile, setEvidenceFile] = useState<File | null>(null);
@@ -50,21 +62,36 @@ export function SupplierPortal() {
   >([]);
   const [submitting, setSubmitting] = useState(false);
 
+  // Appeal response modal state
+  const [respondAppealTarget, setRespondAppealTarget] = useState<DispatchAppeal | null>(null);
+  const [supplierReplyText, setSupplierReplyText] = useState('');
+  const [supplierReplyFile, setSupplierReplyFile] = useState<File | null>(null);
+
   async function loadAll() {
     setLoading(true);
     try {
-      const [dRes, discRes, tRes] = await Promise.all([
+      const [dRes, discRes, tRes, aplRes, reqRes] = await Promise.all([
         apiRequest<{ success: boolean; data: DispatchRecord[] }>('/api/dispatches'),
         apiRequest<{ success: boolean; data: DiscrepancyCase[] }>('/api/discrepancies'),
         apiRequest<{
           success: boolean;
           data: { centres: TargetCentre[]; products: Product[] };
         }>('/api/dispatches/targets'),
+        apiRequest<{ success: boolean; data: DispatchAppeal[] }>('/api/appeals').catch(() => ({
+          success: true,
+          data: [] as DispatchAppeal[],
+        })),
+        apiRequest<{ success: boolean; data: StockRequest[] }>('/api/stock-requests').catch(() => ({
+          success: true,
+          data: [] as StockRequest[],
+        })),
       ]);
       setDispatches(dRes.data);
       setDiscrepancies(discRes.data);
       setCentres(tRes.data.centres);
       setProducts(tRes.data.products);
+      setAppeals(aplRes.data);
+      setStockRequests(reqRes.data);
 
       if (tRes.data.centres.length > 0 && !destinationCentreId) {
         setDestinationCentreId(tRes.data.centres[0].id);
@@ -101,6 +128,7 @@ export function SupplierPortal() {
     try {
       const form = new FormData();
       form.append('destinationCentreId', destinationCentreId);
+      if (linkedStockRequestId) form.append('stockRequestId', linkedStockRequestId);
       form.append('dispatchDate', new Date(dispatchDate).toISOString());
       form.append('status', 'DISPATCHED');
       if (notes) form.append('notes', notes);
@@ -128,6 +156,7 @@ export function SupplierPortal() {
       });
       setNotes('');
       setEvidenceFile(null);
+      setLinkedStockRequestId(null);
       setTab('history');
       await loadAll();
     } catch (err) {
@@ -140,13 +169,76 @@ export function SupplierPortal() {
     }
   }
 
+  async function handleRespondAppeal(e: React.FormEvent) {
+    e.preventDefault();
+    if (!respondAppealTarget) return;
+    setSubmitting(true);
+    setBanner(null);
+    try {
+      const form = new FormData();
+      form.append('supplierRemarks', supplierReplyText);
+      if (supplierReplyFile) form.append('evidence', supplierReplyFile);
+
+      await apiRequest(`/api/appeals/${respondAppealTarget.id}/respond`, {
+        method: 'POST',
+        body: form,
+      });
+
+      setRespondAppealTarget(null);
+      setSupplierReplyText('');
+      setSupplierReplyFile(null);
+      await loadAll();
+      setBanner({
+        type: 'success',
+        text: `Response submitted for Appeal ${respondAppealTarget.appealReference}.`,
+      });
+    } catch (err) {
+      setBanner({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Failed to respond to appeal',
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  function startDispatchForRequest(sr: StockRequest) {
+    setLinkedStockRequestId(sr.id);
+    setDestinationCentreId(sr.centreId);
+    const qty = sr.approvedQuantity ?? sr.requestedQuantity;
+    setNotes(`Fulfilling approved stock request ${sr.requestNumber}`);
+    setItems([
+      {
+        productId: sr.productId,
+        batchNumber: `GCM-${new Date().toISOString().slice(2, 10).replace(/-/g, '')}-REQ`,
+        expiryDate: new Date(Date.now() + 120 * 86400000).toISOString().slice(0, 10),
+        expectedQuantity: String(qty),
+      },
+    ]);
+    setTab('create');
+  }
+
   const deliveredCount = dispatches.filter((d) => d.status === 'DELIVERED').length;
   const pendingCount = dispatches.filter((d) => d.status === 'DISPATCHED').length;
   const discrepancyCount = dispatches.filter((d) => d.status === 'DISCREPANCY').length;
+  const awaitingAppealsCount = appeals.filter(
+    (a) => a.status === 'AWAITING_SUPPLIER_RESPONSE' || a.status === 'SUBMITTED'
+  ).length;
+  const pendingRequestsCount = stockRequests.filter((r) =>
+    ['APPROVED', 'PARTIALLY_APPROVED', 'AWAITING_DISPATCH'].includes(r.status)
+  ).length;
 
   const navItems: Array<{ id: SupplierTab; label: string; icon: React.ComponentType<{ className?: string }> }> = [
     { id: 'dashboard', label: t('navDashboard'), icon: LayoutDashboard },
     { id: 'create', label: t('navCreateDispatch'), icon: PlusCircle },
+    {
+      id: 'appeals',
+      label:
+        awaitingAppealsCount + pendingRequestsCount > 0
+          ? `Appeals & Requests (${awaitingAppealsCount + pendingRequestsCount})`
+          : 'Appeals & Requests',
+      icon: FileWarning,
+    },
     { id: 'history', label: t('navDispatches'), icon: ClipboardList },
     { id: 'status', label: lang === 'gu' ? 'ડિલિવરી સ્થિતિ' : 'Delivery Status', icon: Truck },
     { id: 'profile', label: t('navProfile'), icon: User },
@@ -310,6 +402,24 @@ export function SupplierPortal() {
 
               {tab === 'create' && (
                 <form onSubmit={handleCreateDispatch} className="k-card space-y-5 p-6">
+                  {linkedStockRequestId && (
+                    <div className="flex items-center justify-between rounded-xl border border-emerald-200 bg-[var(--success-subtle)] px-4 py-2.5 text-xs text-[var(--success)]">
+                      <span>
+                        Fulfilling Authorised Stock Request{' '}
+                        <span className="font-mono-num font-bold">
+                          {stockRequests.find((r) => r.id === linkedStockRequestId)?.requestNumber ||
+                            linkedStockRequestId}
+                        </span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setLinkedStockRequestId(null)}
+                        className="font-bold underline"
+                      >
+                        Unlink
+                      </button>
+                    </div>
+                  )}
                   <div className="grid gap-4 md:grid-cols-2">
                     <div>
                       <label className="mb-1.5 block text-sm font-semibold">
@@ -486,6 +596,173 @@ export function SupplierPortal() {
                 </form>
               )}
 
+              {tab === 'appeals' && (
+                <div className="space-y-4">
+                  {/* Approved Stock Requests Ready for Dispatch */}
+                  <div className="k-card p-5">
+                    <div className="mb-3 flex items-center justify-between gap-2">
+                      <h2 className="flex items-center gap-2 text-base font-bold">
+                        <PackagePlus className="h-4 w-4 text-[var(--accent)]" />
+                        Authorised Stock Requests ({stockRequests.length})
+                      </h2>
+                      <StatusBadge variant={pendingRequestsCount > 0 ? 'warning' : 'normal'}>
+                        {pendingRequestsCount} Awaiting Dispatch
+                      </StatusBadge>
+                    </div>
+                    {stockRequests.length === 0 ? (
+                      <EmptyState
+                        title="No authorised stock requests"
+                        description="Approved AWC replenishment requests from Supervisors appear here for dispatch."
+                      />
+                    ) : (
+                      <div className="space-y-2.5">
+                        {stockRequests.map((sr) => {
+                          const canFulfill = ['APPROVED', 'PARTIALLY_APPROVED', 'AWAITING_DISPATCH'].includes(
+                            sr.status
+                          );
+                          return (
+                            <div
+                              key={sr.id}
+                              className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--border)] p-3.5 text-sm"
+                            >
+                              <div>
+                                <div className="flex items-center gap-2">
+                                  <span className="font-mono-num font-bold">{sr.requestNumber}</span>
+                                  <StatusBadge
+                                    variant={
+                                      sr.status === 'COMPLETED' || sr.status === 'DISPATCHED'
+                                        ? 'normal'
+                                        : 'warning'
+                                    }
+                                  >
+                                    {sr.status}
+                                  </StatusBadge>
+                                </div>
+                                <p className="mt-1 text-xs text-[var(--text-secondary)]">
+                                  {sr.centre?.name} ({sr.centre?.code}) • {sr.product?.name} — Authorised:{' '}
+                                  <span className="font-mono-num font-bold">
+                                    {sr.approvedQuantity ?? sr.requestedQuantity} {sr.product?.unit}
+                                  </span>
+                                </p>
+                                {sr.reviewRemarks && (
+                                  <p className="mt-0.5 text-xs italic text-[var(--text-muted)]">
+                                    Supervisor: {sr.reviewRemarks}
+                                  </p>
+                                )}
+                              </div>
+                              {canFulfill && (
+                                <button
+                                  type="button"
+                                  onClick={() => startDispatchForRequest(sr)}
+                                  className="k-btn-primary min-h-[38px] px-3 py-1.5 text-xs"
+                                >
+                                  <Truck className="h-3.5 w-3.5" /> Dispatch Order
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Supervisor Dispatch Appeals */}
+                  <div className="k-card p-5">
+                    <div className="mb-3 flex items-center justify-between gap-2">
+                      <h2 className="flex items-center gap-2 text-base font-bold text-[var(--danger)]">
+                        <FileWarning className="h-4 w-4" />
+                        Supervisor Dispatch Appeals ({appeals.length})
+                      </h2>
+                      <StatusBadge variant={awaitingAppealsCount > 0 ? 'critical' : 'normal'}>
+                        {awaitingAppealsCount} Need Response
+                      </StatusBadge>
+                    </div>
+                    {appeals.length === 0 ? (
+                      <EmptyState
+                        title="No dispatch appeals"
+                        description="Formal delivery shortage/damage appeals raised by Supervisors appear here."
+                      />
+                    ) : (
+                      <div className="space-y-3">
+                        {appeals.map((a) => {
+                          const canRespond =
+                            a.status === 'AWAITING_SUPPLIER_RESPONSE' || a.status === 'SUBMITTED';
+                          return (
+                            <div
+                              key={a.id}
+                              className="rounded-xl border border-[var(--border)] p-4 text-sm"
+                            >
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div>
+                                  <span className="font-mono-num font-bold">{a.appealReference}</span>
+                                  <span className="mx-2 text-[var(--text-muted)]">•</span>
+                                  <span>{a.dispatch?.dispatchReference}</span>
+                                  <span className="mx-2 text-[var(--text-muted)]">•</span>
+                                  <span className="font-semibold">{a.centre?.name}</span>
+                                </div>
+                                <StatusBadge
+                                  variant={
+                                    a.status === 'RESOLVED'
+                                      ? 'normal'
+                                      : canRespond || a.status === 'ESCALATED'
+                                        ? 'critical'
+                                        : 'warning'
+                                  }
+                                >
+                                  {a.status}
+                                </StatusBadge>
+                              </div>
+                              <p className="font-mono-num mt-1 text-xs text-[var(--text-secondary)]">
+                                Dispatched: {a.dispatchedQuantity} | Received: {a.receivedQuantity} | Damaged:{' '}
+                                {a.damagedQuantity} | Missing: {a.missingQuantity}
+                              </p>
+                              <p className="mt-1.5 text-xs text-[var(--text-primary)]">
+                                <span className="font-semibold">Supervisor Appeal:</span> {a.supervisorRemarks}
+                              </p>
+                              {a.evidenceUrl && (
+                                <a
+                                  href={apiUrl(a.evidenceUrl)}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="mt-1 inline-block text-xs font-semibold text-[var(--accent)] underline"
+                                >
+                                  View Supervisor Evidence
+                                </a>
+                              )}
+                              {a.supplierRemarks && (
+                                <p className="mt-1 text-xs text-[var(--accent)]">
+                                  <span className="font-semibold">Your Response:</span> {a.supplierRemarks}
+                                </p>
+                              )}
+                              {a.resolutionRemarks && (
+                                <p className="mt-1 text-xs italic text-[var(--text-secondary)]">
+                                  Final Resolution: {a.resolutionRemarks}
+                                </p>
+                              )}
+                              {canRespond && (
+                                <div className="mt-3">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setRespondAppealTarget(a);
+                                      setSupplierReplyText('');
+                                      setSupplierReplyFile(null);
+                                    }}
+                                    className="k-btn-saffron min-h-[38px] px-3 py-1.5 text-xs"
+                                  >
+                                    <Send className="h-3.5 w-3.5" /> Submit Formal Response
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {(tab === 'history' || tab === 'status') && (
                 <div className="space-y-4">
                   {discrepancies.length > 0 && (
@@ -596,6 +873,49 @@ export function SupplierPortal() {
           )}
         </div>
       </main>
+
+      <ModalDialog
+        open={Boolean(respondAppealTarget)}
+        onClose={() => setRespondAppealTarget(null)}
+        title="Respond to Dispatch Appeal"
+        subtitle={respondAppealTarget?.appealReference}
+      >
+        <form onSubmit={handleRespondAppeal} className="space-y-4">
+          <div>
+            <label className="mb-1 block text-xs font-semibold">Supplier Explanation / Credit Note Action</label>
+            <textarea
+              rows={3}
+              value={supplierReplyText}
+              onChange={(e) => setSupplierReplyText(e.target.value)}
+              className="k-textarea"
+              required
+              minLength={5}
+              placeholder="Explain weighbridge challan / batch inspection or replacement commitment..."
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-semibold">Supporting Challan / Photo (Optional)</label>
+            <input
+              type="file"
+              accept="image/*,application/pdf"
+              onChange={(e) => setSupplierReplyFile(e.target.files?.[0] || null)}
+              className="k-input py-2 text-xs"
+            />
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setRespondAppealTarget(null)}
+              className="k-btn-secondary flex-1"
+            >
+              {t('cancel')}
+            </button>
+            <button type="submit" disabled={submitting} className="k-btn-primary flex-1">
+              {submitting ? t('loading') : 'Submit Supplier Response'}
+            </button>
+          </div>
+        </form>
+      </ModalDialog>
     </div>
   );
 }

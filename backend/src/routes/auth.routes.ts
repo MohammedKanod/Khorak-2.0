@@ -72,6 +72,7 @@ const userProfileSelect = {
       nameGu: true,
       code: true,
       location: true,
+      offlineCredentialSalt: true,
       sector: {
         select: {
           id: true,

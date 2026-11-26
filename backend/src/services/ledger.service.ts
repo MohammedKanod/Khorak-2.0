@@ -58,6 +58,19 @@ export function classifyReorderLevel(usableStock: number, daysOfStock: number | 
   return 'NORMAL';
 }
 
+/**
+ * Acquires a PostgreSQL transaction-scoped advisory lock per (centreId, productId)
+ * to serialize concurrent stock deductions and prevent negative-balance race conditions.
+ */
+export async function acquireStockLock(
+  tx: Prisma.TransactionClient,
+  centreId: string,
+  productId: string
+): Promise<void> {
+  const lockKey = `stock:${centreId}:${productId}`;
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
+}
+
 export function computeNetFromEvent(eventType: LedgerEventType, quantity: number): number {
   switch (eventType) {
     case LedgerEventType.OPENING_STOCK:

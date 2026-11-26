@@ -2,12 +2,11 @@
  * Local Aadhaar Offline XML / PrintLetterBarcodeData / Synthetic QR Processor.
  *
  * SECURITY & PRIVACY GUARANTEES:
- * 1. Runs 100% locally in the browser. Zero external API calls.
- * 2. Never logs raw XML or full 12-digit Aadhaar numbers.
- * 3. Extracts ONLY minimal fields: name, yob/dob, gender, and last 4 digits.
- * 4. Produces a one-way SHA-256 `protectedCredentialReference` matching the
- *    authorised local BeneficiaryReference table.
- * 5. Clearly distinct from live UIDAI online authentication.
+ * 1. Runs 100% locally in the browser/device. Zero external API calls.
+ * 2. Never logs, displays, or transmits raw XML, full Aadhaar numbers, or last-4 Aadhaar digits.
+ * 3. Uses transient local XML parsing ONLY to derive a per-centre HMAC-SHA256
+ *    `protectedCredentialReference` + display name / YOB / gender.
+ * 4. Clearly distinct from live UIDAI online authentication.
  */
 
 export interface ParsedOfflineCredential {
@@ -15,7 +14,6 @@ export interface ParsedOfflineCredential {
   name: string;
   yob: string;
   gender: string;
-  maskedIdLast4: string;
   protectedCredentialReference: string;
   isSyntheticDemo: boolean;
 }
@@ -62,14 +60,32 @@ export const SYNTHETIC_DEMO_QR_SAMPLES: SyntheticQrSample[] = [
 export async function computeCredentialHash(
   last4: string,
   name: string,
-  yob: string
+  yob: string,
+  salt?: string | null
 ): Promise<string> {
   const normalizedName = name.trim().toLowerCase().replace(/\s+/g, ' ');
+  const enc = new TextEncoder();
+
+  if (salt && salt.trim().length > 0) {
+    const payload = `khorak-offline-v2|${normalizedName}|${yob.trim()}|${last4.trim()}`;
+    const key = await crypto.subtle.importKey(
+      'raw',
+      enc.encode(salt),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign']
+    );
+    const sig = await crypto.subtle.sign('HMAC', key, enc.encode(payload));
+    return Array.from(new Uint8Array(sig))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+  }
+
   const raw = `khorak-uidai-offline-v1|${last4.trim()}|${normalizedName}|${yob.trim()}`;
-  const encoded = new TextEncoder().encode(raw);
-  const digest = await crypto.subtle.digest('SHA-256', encoded);
-  const hashArray = Array.from(new Uint8Array(digest));
-  return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+  const digest = await crypto.subtle.digest('SHA-256', enc.encode(raw));
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
 }
 
 function extractYearFromDob(dob: string): string {
@@ -84,7 +100,8 @@ function extractLast4FromUidOrRef(value: string): string {
 }
 
 export async function parseAadhaarOfflineQr(
-  rawQrText: string
+  rawQrText: string,
+  centreSalt?: string | null
 ): Promise<ParsedOfflineCredential> {
   const trimmed = rawQrText.trim();
   if (!trimmed.startsWith('<')) {
@@ -130,13 +147,17 @@ export async function parseAadhaarOfflineQr(
       refId.startsWith('SYNTH') ||
       offlineKyc.querySelector('Signature')?.getAttribute('synthetic') === 'true';
 
-    const protectedCredentialReference = await computeCredentialHash(last4, name, yob);
+    const protectedCredentialReference = await computeCredentialHash(
+      last4,
+      name,
+      yob,
+      centreSalt
+    );
     return {
       format: isSynthetic ? 'SYNTHETIC_DEMO_XML' : 'OFFLINE_KYC_XML',
       name,
       yob,
       gender,
-      maskedIdLast4: last4,
       protectedCredentialReference,
       isSyntheticDemo: isSynthetic,
     };
@@ -157,13 +178,17 @@ export async function parseAadhaarOfflineQr(
       throw new Error('Incomplete fields in PrintLetterBarcodeData credential.');
     }
 
-    const protectedCredentialReference = await computeCredentialHash(last4, name, yob);
+    const protectedCredentialReference = await computeCredentialHash(
+      last4,
+      name,
+      yob,
+      centreSalt
+    );
     return {
       format: isSynthetic ? 'SYNTHETIC_DEMO_XML' : 'PRINT_LETTER_XML',
       name,
       yob,
       gender,
-      maskedIdLast4: last4,
       protectedCredentialReference,
       isSyntheticDemo: isSynthetic,
     };

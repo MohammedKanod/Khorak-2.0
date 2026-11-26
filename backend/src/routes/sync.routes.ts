@@ -1,18 +1,27 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import {
+  BeneficiaryCategory,
   DiscrepancyStatus,
   DispatchStatus,
   LedgerEventType,
   Role,
   SpoilageStatus,
+  StockRequestReason,
+  StockRequestStatus,
   SyncStatus,
 } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { AppError } from '../lib/errors';
 import { assertCentreInScope, requireAuth, requireRoles } from '../middleware/auth';
-import { executeDistribution } from './distribution.routes';
 import {
+  executeCreateBeneficiary,
+  executeDistribution,
+  executeMultiDistribution,
+} from './distribution.routes';
+import { executeCreateStockRequest } from './stockRequests.routes';
+import {
+  acquireStockLock,
   allocateFefoBatches,
   getCentreBatchBalances,
   getCentreInventorySummary,
@@ -20,6 +29,7 @@ import {
 import { refreshCentreAlerts } from '../services/alert.service';
 import { recordAuditLog } from '../lib/audit';
 import { roundQty } from '../lib/math';
+import { generateCentreSalt } from '../lib/credential';
 
 export const syncRouter = Router();
 
@@ -28,10 +38,12 @@ syncRouter.use(requireAuth);
 const syncItemSchema = z.object({
   operationUuid: z.string().min(8).max(120),
   operationType: z.enum([
+    'CREATE_BENEFICIARY',
     'DISTRIBUTION',
     'CONSUMPTION',
     'SPOILAGE',
     'RECEIVE_DISPATCH',
+    'CREATE_STOCK_REQUEST',
   ]),
   createdAt: z.string(),
   payload: z.record(z.string(), z.unknown()),
@@ -74,14 +86,82 @@ syncRouter.post(
           let resultData: unknown = null;
           let centreIdForSync: string | null = req.user!.centreId;
 
-          if (op.operationType === 'DISTRIBUTION') {
+          if (op.operationType === 'CREATE_BENEFICIARY') {
+            const p = z
+              .object({
+                centreId: z.string().uuid().optional(),
+                localReference: z.string().min(3).max(40).optional(),
+                displayName: z.string().min(2).max(120),
+                displayNameGu: z.string().max(120).optional(),
+                yob: z.string().regex(/^\d{4}$/),
+                beneficiaryCategory: z.nativeEnum(BeneficiaryCategory),
+                protectedCredentialReference: z.string().min(16).max(128).optional(),
+              })
+              .parse(op.payload);
+
+            const targetCentreId = p.centreId || req.user!.centreId;
+            if (!targetCentreId) throw new AppError(400, 'CENTRE_REQUIRED', 'Missing centreId');
+            centreIdForSync = targetCentreId;
+            await assertCentreInScope(req.user!, targetCentreId);
+
+            const exec = await executeCreateBeneficiary({
+              userId: req.user!.id,
+              userRole: req.user!.role,
+              centreId: targetCentreId,
+              localReference: p.localReference,
+              displayName: p.displayName,
+              displayNameGu: p.displayNameGu,
+              yob: p.yob,
+              beneficiaryCategory: p.beneficiaryCategory,
+              protectedCredentialReference: p.protectedCredentialReference,
+              idempotencyKey: op.operationUuid,
+            });
+            resultData = exec.beneficiary;
+          } else if (op.operationType === 'CREATE_STOCK_REQUEST') {
+            const p = z
+              .object({
+                centreId: z.string().uuid().optional(),
+                productId: z.string().uuid(),
+                requestedQuantity: z.coerce.number().positive().max(5000),
+                reason: z.nativeEnum(StockRequestReason),
+                remarks: z.string().max(400).optional(),
+              })
+              .parse(op.payload);
+
+            const targetCentreId = p.centreId || req.user!.centreId;
+            if (!targetCentreId) throw new AppError(400, 'CENTRE_REQUIRED', 'Missing centreId');
+            centreIdForSync = targetCentreId;
+            await assertCentreInScope(req.user!, targetCentreId);
+
+            const exec = await executeCreateStockRequest({
+              userId: req.user!.id,
+              centreId: targetCentreId,
+              productId: p.productId,
+              requestedQuantity: p.requestedQuantity,
+              reason: p.reason,
+              remarks: p.remarks,
+              idempotencyKey: op.operationUuid,
+            });
+            resultData = exec.request;
+          } else if (op.operationType === 'DISTRIBUTION') {
             const p = z
               .object({
                 centreId: z.string().uuid().optional(),
                 beneficiaryReferenceId: z.string().uuid(),
-                productId: z.string().uuid(),
+                productId: z.string().uuid().optional(),
                 batchId: z.string().uuid().optional(),
-                quantity: z.coerce.number().positive(),
+                quantity: z.coerce.number().positive().optional(),
+                items: z
+                  .array(
+                    z.object({
+                      productId: z.string().uuid(),
+                      batchId: z.string().uuid().optional(),
+                      quantity: z.coerce.number().positive(),
+                    })
+                  )
+                  .min(1)
+                  .max(20)
+                  .optional(),
                 distributedAt: z.string().optional(),
                 remarks: z.string().optional(),
               })
@@ -92,18 +172,34 @@ syncRouter.post(
             centreIdForSync = targetCentreId;
             await assertCentreInScope(req.user!, targetCentreId);
 
-            const exec = await executeDistribution({
-              userId: req.user!.id,
-              centreId: targetCentreId,
-              beneficiaryReferenceId: p.beneficiaryReferenceId,
-              productId: p.productId,
-              batchId: p.batchId,
-              quantity: p.quantity,
-              distributedAt: p.distributedAt ? new Date(p.distributedAt) : new Date(op.createdAt),
-              idempotencyKey: op.operationUuid,
-              remarks: p.remarks,
-            });
-            resultData = exec.distribution;
+            if (p.items && p.items.length > 0) {
+              const exec = await executeMultiDistribution({
+                userId: req.user!.id,
+                centreId: targetCentreId,
+                beneficiaryReferenceId: p.beneficiaryReferenceId,
+                items: p.items,
+                distributedAt: p.distributedAt ? new Date(p.distributedAt) : new Date(op.createdAt),
+                idempotencyKey: op.operationUuid,
+                remarks: p.remarks,
+              });
+              resultData = exec.distributions;
+            } else {
+              if (!p.productId || !p.quantity) {
+                throw new AppError(400, 'INVALID_PAYLOAD', 'Distribution requires productId and quantity or items');
+              }
+              const exec = await executeDistribution({
+                userId: req.user!.id,
+                centreId: targetCentreId,
+                beneficiaryReferenceId: p.beneficiaryReferenceId,
+                productId: p.productId,
+                batchId: p.batchId,
+                quantity: p.quantity,
+                distributedAt: p.distributedAt ? new Date(p.distributedAt) : new Date(op.createdAt),
+                idempotencyKey: op.operationUuid,
+                remarks: p.remarks,
+              });
+              resultData = exec.distribution;
+            }
           } else if (op.operationType === 'CONSUMPTION') {
             const p = z
               .object({
@@ -127,6 +223,7 @@ syncRouter.post(
               resultData = existingEv;
             } else {
               resultData = await prisma.$transaction(async (tx) => {
+                await acquireStockLock(tx, targetCentreId, p.productId);
                 const allocations = await allocateFefoBatches(tx, {
                   centreId: targetCentreId,
                   productId: p.productId,
@@ -249,6 +346,21 @@ syncRouter.post(
                 missingQuantity: number;
               }> = [];
 
+              const receivedKeys = new Set<string>();
+              for (const item of p.items) {
+                const k = `${item.productId}:${item.batchId}`;
+                if (receivedKeys.has(k)) {
+                  throw new AppError(400, 'DUPLICATE_RECEIPT_LINE', 'Duplicate product/batch line in receipt');
+                }
+                receivedKeys.add(k);
+                const existsInDispatch = dispatch.items.some(
+                  (d) => d.productId === item.productId && d.batchId === item.batchId
+                );
+                if (!existsInDispatch) {
+                  throw new AppError(400, 'UNKNOWN_RECEIPT_LINE', 'Receipt contains line not belonging to dispatch');
+                }
+              }
+
               for (const dItem of dispatch.items) {
                 const m = p.items.find(
                   (i) => i.productId === dItem.productId && i.batchId === dItem.batchId
@@ -280,6 +392,14 @@ syncRouter.post(
 
               const hasDiscrepancy = totalAccepted !== totalExpected;
               resultData = await prisma.$transaction(async (tx) => {
+                const lockKeys = Array.from(
+                  new Set(itemsData.map((it) => `${dispatch.destinationCentreId}::${it.productId}`))
+                ).sort();
+                for (const key of lockKeys) {
+                  const [, pid] = key.split('::');
+                  await acquireStockLock(tx, dispatch.destinationCentreId, pid);
+                }
+
                 const receipt = await tx.deliveryReceipt.create({
                   data: {
                     dispatchId: dispatch.id,
@@ -332,6 +452,27 @@ syncRouter.post(
                     status: hasDiscrepancy ? DispatchStatus.DISCREPANCY : DispatchStatus.DELIVERED,
                   },
                 });
+                if (dispatch.stockRequestId) {
+                  await tx.stockRequest.update({
+                    where: { id: dispatch.stockRequestId },
+                    data: {
+                      status: hasDiscrepancy
+                        ? StockRequestStatus.RECEIVED
+                        : StockRequestStatus.COMPLETED,
+                      history: {
+                        create: {
+                          actorId: req.user!.id,
+                          fromStatus: StockRequestStatus.DISPATCHED,
+                          toStatus: hasDiscrepancy
+                            ? StockRequestStatus.RECEIVED
+                            : StockRequestStatus.COMPLETED,
+                          action: hasDiscrepancy ? 'RECEIVED_WITH_DISCREPANCY' : 'COMPLETED',
+                          remarks: `Offline sync receipt recorded (${dispatch.dispatchReference})`,
+                        },
+                      },
+                    },
+                  });
+                }
                 return receipt;
               });
               await refreshCentreAlerts(dispatch.destinationCentreId);
@@ -420,7 +561,15 @@ syncRouter.get(
       }
 
       const centre = await assertCentreInScope(req.user!, centreId);
-      const [products, inventorySummary, pendingDispatches, beneficiaries, recentDistributions, alerts] =
+      if (!centre.offlineCredentialSalt) {
+        const generatedSalt = generateCentreSalt();
+        await prisma.anganwadiCentre.update({
+          where: { id: centre.id },
+          data: { offlineCredentialSalt: generatedSalt },
+        });
+        centre.offlineCredentialSalt = generatedSalt;
+      }
+      const [products, inventorySummary, pendingDispatches, beneficiaries, recentDistributions, alerts, stockRequests] =
         await Promise.all([
           prisma.product.findMany({ where: { isActive: true }, orderBy: { name: 'asc' } }),
           getCentreInventorySummary(centre.id),
@@ -439,7 +588,6 @@ syncRouter.get(
               localReference: true,
               displayName: true,
               displayNameGu: true,
-              maskedIdLast4: true,
               yob: true,
               beneficiaryCategory: true,
               protectedCredentialReference: true,
@@ -451,7 +599,7 @@ syncRouter.get(
           prisma.distribution.findMany({
             where: { centreId: centre.id },
             include: {
-              beneficiary: { select: { localReference: true, displayName: true, displayNameGu: true, maskedIdLast4: true } },
+              beneficiary: { select: { localReference: true, displayName: true, displayNameGu: true } },
               product: { select: { name: true, nameGu: true, unit: true } },
               batch: { select: { batchNumber: true } },
             },
@@ -461,6 +609,14 @@ syncRouter.get(
           prisma.alert.findMany({
             where: { centreId: centre.id, isResolved: false },
             orderBy: [{ severity: 'desc' }, { createdAt: 'desc' }],
+          }),
+          prisma.stockRequest.findMany({
+            where: { centreId: centre.id },
+            include: {
+              product: { select: { id: true, name: true, nameGu: true, unit: true, category: true } },
+            },
+            orderBy: { createdAt: 'desc' },
+            take: 30,
           }),
         ]);
 
@@ -475,6 +631,7 @@ syncRouter.get(
           beneficiaries,
           recentDistributions,
           alerts,
+          stockRequests,
         },
       });
     } catch (err) {

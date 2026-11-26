@@ -9,9 +9,13 @@ import {
   Home,
   LogOut,
   PackageCheck,
+  PackagePlus,
+  Plus,
   QrCode,
   RefreshCw,
   ShieldAlert,
+  ShieldCheck,
+  Trash2,
   Truck,
   User,
   UserPlus,
@@ -34,6 +38,8 @@ import {
   DispatchRecord,
   DistributionRecord,
   ProductInventorySummary,
+  StockRequest,
+  StockRequestReason,
 } from '../../types';
 import {
   EmptyState,
@@ -43,13 +49,13 @@ import {
   StatusBadge,
   SyncStatusPill,
 } from '../../components/ui';
-import { QrScannerModal } from '../../components/QrScannerModal';
-import { ParsedOfflineCredential } from '../../lib/aadhaarQr';
+import { QrScannerModal, QrScannerPanel } from '../../components/QrScannerModal';
+import { ParsedOfflineCredential, SYNTHETIC_DEMO_QR_SAMPLES } from '../../lib/aadhaarQr';
 
 type Tab = 'home' | 'inventory' | 'distribution' | 'history' | 'profile';
 
 export function AwwApp() {
-  const { user, isOnline, logout } = useAuth();
+  const { user, isOnline, logout, refreshConnectivity } = useAuth();
   const { lang, setLang, t } = useI18n();
   const isAwh = user?.role === 'AWH';
   const centreId = user?.centreId || '';
@@ -74,33 +80,47 @@ export function AwwApp() {
     batch: { batchNumber: string };
   }>>([]);
   const [outbox, setOutbox] = useState<OutboxRecord[]>([]);
+  const [stockRequests, setStockRequests] = useState<StockRequest[]>([]);
+  const [centreSalt, setCentreSalt] = useState<string | null>(
+    () => user?.centre?.offlineCredentialSalt ?? null
+  );
 
   // Modals
   const [receiveTarget, setReceiveTarget] = useState<DispatchRecord | null>(null);
   const [receiveModalOpen, setReceiveModalOpen] = useState(false);
   const [qrOpen, setQrOpen] = useState(false);
+  const [benQrOpen, setBenQrOpen] = useState(false);
   const [distModalOpen, setDistModalOpen] = useState(false);
   const [usageModalOpen, setUsageModalOpen] = useState(false);
   const [spoilageModalOpen, setSpoilageModalOpen] = useState(false);
+  const [stockRequestModalOpen, setStockRequestModalOpen] = useState(false);
   const [addBenOpen, setAddBenOpen] = useState(false);
   const [qrPreviewBen, setQrPreviewBen] = useState<{
     beneficiary: BeneficiaryReference;
     dataUrl: string;
   } | null>(null);
 
-  // Add Beneficiary form state
+  // Add Beneficiary form state (QR-first + manual fallback, zero Aadhaar digits)
+  const [benMode, setBenMode] = useState<'qr' | 'manual'>('qr');
+  const [benCredRef, setBenCredRef] = useState<string | null>(null);
+  const [benScannedFormat, setBenScannedFormat] = useState<string | null>(null);
   const [benName, setBenName] = useState('');
   const [benNameGu, setBenNameGu] = useState('');
-  const [benLast4, setBenLast4] = useState('');
   const [benYob, setBenYob] = useState('1998');
   const [benCategory, setBenCategory] = useState('PREGNANT_WOMAN');
 
-  // Distribution form state
+  // Stock Request form state
+  const [reqProductId, setReqProductId] = useState('');
+  const [reqQuantity, setReqQuantity] = useState('25');
+  const [reqReason, setReqReason] = useState<StockRequestReason>('LOW_STOCK');
+  const [reqRemarks, setReqRemarks] = useState('');
+
+  // Multi-item Distribution form state
   const [matchedBeneficiary, setMatchedBeneficiary] = useState<BeneficiaryReference | null>(null);
   const [verifiedLabel, setVerifiedLabel] = useState<string | null>(null);
-  const [distProductId, setDistProductId] = useState('');
-  const [distBatchId, setDistBatchId] = useState('');
-  const [distQty, setDistQty] = useState('1');
+  const [distItems, setDistItems] = useState<
+    Array<{ rowId: string; productId: string; batchId: string; quantity: string }>
+  >([]);
   const [submitting, setSubmitting] = useState(false);
 
   // Receive form state
@@ -133,14 +153,16 @@ export function AwwApp() {
       const outboxItems = await listOutboxOperations(centreId);
       setOutbox(outboxItems);
 
-      if (navigator.onLine) {
-        // Snapshot and ledger only depend on centreId, so fetch them concurrently
-        // instead of paying two full network round trips back to back.
-        const [snap, ledgerRes] = await Promise.all([
+      const reachable = await refreshConnectivity();
+      if (reachable) {
+        const [snap, ledgerRes, reqRes] = await Promise.all([
           pullCentreSnapshot(centreId),
           apiRequest<{ success: boolean; data: typeof ledgerEvents }>(
             `/api/inventory/${centreId}/ledger`
           ).catch(() => null),
+          apiRequest<{ success: boolean; data: StockRequest[] }>('/api/stock-requests').catch(
+            () => null
+          ),
         ]);
         if (snap) {
           setInventory(snap.inventorySummary);
@@ -148,6 +170,8 @@ export function AwwApp() {
           setAlerts(snap.alerts);
           setBeneficiaries(snap.beneficiaries);
           setDistributions(snap.recentDistributions);
+          setStockRequests(reqRes?.data ?? snap.stockRequests ?? []);
+          if (snap.offlineCredentialSalt) setCentreSalt(snap.offlineCredentialSalt);
         }
         if (ledgerRes) {
           setLedgerEvents(ledgerRes.data);
@@ -160,6 +184,8 @@ export function AwwApp() {
           setAlerts(cached.alerts);
           setBeneficiaries(cached.beneficiaries);
           setDistributions(cached.recentDistributions);
+          setStockRequests(cached.stockRequests ?? []);
+          if (cached.offlineCredentialSalt) setCentreSalt(cached.offlineCredentialSalt);
         }
       }
     } catch (err) {
@@ -170,6 +196,8 @@ export function AwwApp() {
         setAlerts(cached.alerts);
         setBeneficiaries(cached.beneficiaries);
         setDistributions(cached.recentDistributions);
+        setStockRequests(cached.stockRequests ?? []);
+        if (cached.offlineCredentialSalt) setCentreSalt(cached.offlineCredentialSalt);
       } else {
         setBanner({
           type: 'error',
@@ -244,7 +272,8 @@ export function AwwApp() {
     const opUuid = `rcpt-${receiveTarget.id}-${crypto.randomUUID().slice(0, 8)}`;
 
     try {
-      if (!navigator.onLine) {
+      const reachable = await refreshConnectivity();
+      if (!reachable) {
         await enqueueOfflineOperation({
           operationUuid: opUuid,
           operationType: 'RECEIVE_DISPATCH',
@@ -316,7 +345,7 @@ export function AwwApp() {
       (b) => b.protectedCredentialReference === cred.protectedCredentialReference
     );
 
-    if (!match && navigator.onLine) {
+    if (!match && (await refreshConnectivity())) {
       try {
         const res = await apiRequest<{
           success: boolean;
@@ -343,8 +372,8 @@ export function AwwApp() {
         type: 'error',
         text:
           lang === 'gu'
-            ? `લાભાર્થી (${cred.name}, ****${cred.maskedIdLast4}) આ કેન્દ્રની યાદીમાં મળ્યા નથી.`
-            : `Beneficiary (${cred.name}, ****${cred.maskedIdLast4}) is not registered in this centre's authorised reference list.`,
+            ? `લાભાર્થી (${cred.name}, YOB ${cred.yob}) આ કેન્દ્રની યાદીમાં મળ્યા નથી. પહેલા નવા લાભાર્થી તરીકે નોંધો.`
+            : `Beneficiary (${cred.name}, YOB ${cred.yob}) is not registered in this centre. Register via Add Beneficiary first.`,
       });
       return;
     }
@@ -365,42 +394,52 @@ export function AwwApp() {
     }
 
     setMatchedBeneficiary(match);
-    setVerifiedLabel(`${cred.format} • ****${cred.maskedIdLast4}`);
+    setVerifiedLabel(`${cred.format} • Local Credential Match`);
     const defaultThr = inventory.find((p) => p.category === 'THR' && p.usableStock > 0) || inventory[0];
-    if (defaultThr) {
-      setDistProductId(defaultThr.productId);
-      setDistBatchId('');
-    }
-    setDistQty('1');
+    setDistItems(
+      defaultThr
+        ? [{ rowId: crypto.randomUUID(), productId: defaultThr.productId, batchId: '', quantity: '1' }]
+        : []
+    );
     setDistModalOpen(true);
   }
 
   async function submitDistribution(e: React.FormEvent) {
     e.preventDefault();
-    if (!matchedBeneficiary || !distProductId) return;
+    if (!matchedBeneficiary || distItems.length === 0) return;
     setSubmitting(true);
     setBanner(null);
+
+    const parsedItems = distItems.map((row) => ({
+      productId: row.productId,
+      ...(row.batchId ? { batchId: row.batchId } : {}),
+      quantity: Number(row.quantity),
+    }));
 
     const opUuid = `dist-${crypto.randomUUID()}`;
     const payload = {
       centreId,
       beneficiaryReferenceId: matchedBeneficiary.id,
-      productId: distProductId,
-      ...(distBatchId ? { batchId: distBatchId } : {}),
-      quantity: Number(distQty),
+      items: parsedItems,
       idempotencyKey: opUuid,
     };
 
     try {
-      if (!navigator.onLine) {
-        const prod = inventory.find((p) => p.productId === distProductId);
+      const reachable = await refreshConnectivity();
+      if (!reachable) {
+        const itemSummary = parsedItems
+          .map((it) => {
+            const p = inventory.find((x) => x.productId === it.productId);
+            return `${it.quantity} ${p?.unit || ''} ${p?.productName || ''}`;
+          })
+          .join(', ');
         await enqueueOfflineOperation({
           operationUuid: opUuid,
           operationType: 'DISTRIBUTION',
           centreId,
           userId: user!.id,
-          summaryLabel: `Distribute ${distQty} ${prod?.unit || ''} ${prod?.productName || ''} to ${matchedBeneficiary.displayName}`,
-          summaryLabelGu: `${matchedBeneficiary.displayNameGu || matchedBeneficiary.displayName} ને ${distQty} ${prod?.productNameGu || ''} વિતરણ`,
+          summaryLabel: `Distribute (${itemSummary}) to ${matchedBeneficiary.displayName}`,
+          summaryLabelGu: `${matchedBeneficiary.displayNameGu || matchedBeneficiary.displayName} ને વિતરણ (${itemSummary})`,
           payload,
         });
         setDistModalOpen(false);
@@ -409,8 +448,8 @@ export function AwwApp() {
           type: 'success',
           text:
             lang === 'gu'
-              ? 'વિતરણ સ્થાનિક રીતે સાચવેલ — ઓનલાઇન થતાં સિંક થશે.'
-              : 'Distribution saved locally — pending synchronisation.',
+              ? 'બહુવિધ વસ્તુ વિતરણ સ્થાનિક રીતે સાચવેલ — ઓનલાઇન થતાં સિંક થશે.'
+              : 'Multi-item distribution saved locally — pending synchronisation.',
         });
         return;
       }
@@ -448,7 +487,8 @@ export function AwwApp() {
     const prod = inventory.find((p) => p.productId === usageProductId);
 
     try {
-      if (!navigator.onLine) {
+      const reachable = await refreshConnectivity();
+      if (!reachable) {
         await enqueueOfflineOperation({
           operationUuid: opUuid,
           operationType: 'CONSUMPTION',
@@ -507,7 +547,8 @@ export function AwwApp() {
     const prod = inventory.find((p) => p.productId === spoilProductId);
 
     try {
-      if (!navigator.onLine) {
+      const reachable = await refreshConnectivity();
+      if (!reachable) {
         await enqueueOfflineOperation({
           operationUuid: opUuid,
           operationType: 'SPOILAGE',
@@ -561,36 +602,83 @@ export function AwwApp() {
     }
   }
 
-  async function submitAddBeneficiary(e: React.FormEvent) {
-    e.preventDefault();
-    if (!navigator.onLine) {
+  function openAddBeneficiaryModal() {
+    setBenMode('qr');
+    setBenCredRef(null);
+    setBenScannedFormat(null);
+    setBenName('');
+    setBenNameGu('');
+    setBenYob('1998');
+    setBenCategory('PREGNANT_WOMAN');
+    setAddBenOpen(true);
+  }
+
+  function handleBenQrScanned(cred: ParsedOfflineCredential) {
+    setBenQrOpen(false);
+    const dup = beneficiaries.find(
+      (b) =>
+        b.protectedCredentialReference === cred.protectedCredentialReference ||
+        (b.displayName.toLowerCase() === cred.name.toLowerCase() && (b.yob || '') === cred.yob)
+    );
+    if (dup) {
       setBanner({
         type: 'error',
         text:
           lang === 'gu'
-            ? 'નવા લાભાર્થી ઉમેરવા અને મુખ્ય સેવિકા મંજૂરી માટે ઇન્ટરનેટ જરૂરી છે.'
-            : 'Online connection is required to submit a new beneficiary for Sevika approval.',
+            ? `${dup.displayNameGu || dup.displayName} (${dup.localReference}) પહેલેથી જ નોંધાયેલા છે.`
+            : `${dup.displayName} (${dup.localReference}) is already registered at this centre.`,
       });
       return;
     }
+    setBenName(cred.name);
+    setBenYob(cred.yob);
+    setBenCredRef(cred.protectedCredentialReference);
+    setBenScannedFormat(cred.format);
+  }
+
+  async function submitAddBeneficiary(e: React.FormEvent) {
+    e.preventDefault();
     setSubmitting(true);
     setBanner(null);
+    const opUuid = `ben-${crypto.randomUUID()}`;
+    const payload = {
+      centreId,
+      displayName: benName,
+      displayNameGu: benNameGu || undefined,
+      yob: benYob,
+      beneficiaryCategory: benCategory,
+      ...(benCredRef ? { protectedCredentialReference: benCredRef } : {}),
+      idempotencyKey: opUuid,
+    };
+
     try {
+      if (!(await refreshConnectivity())) {
+        await enqueueOfflineOperation({
+          operationUuid: opUuid,
+          operationType: 'CREATE_BENEFICIARY',
+          centreId,
+          userId: user!.id,
+          summaryLabel: `Register Beneficiary ${benName}`,
+          summaryLabelGu: `નવા લાભાર્થી નોંધણી: ${benNameGu || benName}`,
+          payload,
+        });
+        setAddBenOpen(false);
+        await loadData();
+        setBanner({
+          type: 'success',
+          text:
+            lang === 'gu'
+              ? 'લાભાર્થી નોંધણી સ્થાનિક રીતે સાચવેલ — ઓનલાઇન થતાં મુખ્ય સેવિકા મંજૂરી માટે જશે.'
+              : 'Beneficiary saved offline — will sync for Mukhya Sevika approval when online.',
+        });
+        return;
+      }
+
       await apiRequest('/api/beneficiaries', {
         method: 'POST',
-        body: JSON.stringify({
-          centreId,
-          displayName: benName,
-          displayNameGu: benNameGu || undefined,
-          maskedIdLast4: benLast4,
-          yob: benYob,
-          beneficiaryCategory: benCategory,
-        }),
+        body: JSON.stringify(payload),
       });
       setAddBenOpen(false);
-      setBenName('');
-      setBenNameGu('');
-      setBenLast4('');
       await loadData();
       setBanner({
         type: 'success',
@@ -609,10 +697,76 @@ export function AwwApp() {
     }
   }
 
+  async function submitStockRequest(e: React.FormEvent) {
+    e.preventDefault();
+    if (!reqProductId) return;
+    setSubmitting(true);
+    setBanner(null);
+    const opUuid = `sreq-${crypto.randomUUID()}`;
+    const prod = inventory.find((p) => p.productId === reqProductId);
+    const payload = {
+      centreId,
+      productId: reqProductId,
+      requestedQuantity: Number(reqQuantity),
+      reason: reqReason,
+      remarks: reqRemarks || undefined,
+      idempotencyKey: opUuid,
+    };
+
+    try {
+      if (!(await refreshConnectivity())) {
+        await enqueueOfflineOperation({
+          operationUuid: opUuid,
+          operationType: 'CREATE_STOCK_REQUEST',
+          centreId,
+          userId: user!.id,
+          summaryLabel: `Request ${reqQuantity} ${prod?.unit || ''} ${prod?.productName || ''}`,
+          summaryLabelGu: `સ્ટોક વિનંતી: ${reqQuantity} ${prod?.productNameGu || ''}`,
+          payload,
+        });
+        setStockRequestModalOpen(false);
+        setReqRemarks('');
+        await loadData();
+        setBanner({
+          type: 'success',
+          text:
+            lang === 'gu'
+              ? 'સ્ટોક વિનંતી સ્થાનિક રીતે સાચવેલ — ઓનલાઇન થતાં સુપરવાઇઝરને મોકલાશે.'
+              : 'Stock request saved offline — will sync automatically when online.',
+        });
+        return;
+      }
+
+      await apiRequest('/api/stock-requests', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      setStockRequestModalOpen(false);
+      setReqRemarks('');
+      await loadData();
+      setBanner({
+        type: 'success',
+        text:
+          lang === 'gu'
+            ? 'સ્ટોક વિનંતી સુપરવાઇઝરની મંજૂરી માટે મોકલાઈ.'
+            : 'Stock replenishment request submitted for Supervisor review.',
+      });
+    } catch (err) {
+      setBanner({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Failed to submit stock request',
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   async function openBeneficiaryQrCard(b: BeneficiaryReference) {
-    const yob = b.yob || '1997';
-    const xml = `<OfflinePaperlessKyc referenceId="SYNTH${b.maskedIdLast4}2026"><UidData><Poi name="${b.displayName}" dob="01-01-${yob}" gender="F"/></UidData><Signature synthetic="true"/></OfflinePaperlessKyc>`;
-    const dataUrl = await QRCode.toDataURL(xml, {
+    const sampleMatch = SYNTHETIC_DEMO_QR_SAMPLES.find(
+      (s) => s.localReference === b.localReference
+    );
+    const qrPayload = sampleMatch ? sampleMatch.xmlPayload : `khorak-ref:${b.localReference}`;
+    const dataUrl = await QRCode.toDataURL(qrPayload, {
       width: 220,
       margin: 1,
       color: { dark: '#1B4332', light: '#FFFFFF' },
@@ -626,7 +780,6 @@ export function AwwApp() {
     (a) => a.severity === 'CRITICAL' || a.severity === 'WARNING'
   );
 
-  const selectedDistProduct = inventory.find((p) => p.productId === distProductId);
   const selectedSpoilProduct = inventory.find((p) => p.productId === spoilProductId);
 
   return (
@@ -841,6 +994,40 @@ export function AwwApp() {
                         </span>
                       </button>
                     )}
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const lowProd =
+                          inventory.find(
+                            (p) => p.reorderLevel === 'STOCKOUT' || p.reorderLevel === 'CRITICAL'
+                          ) || inventory[0];
+                        if (lowProd) setReqProductId(lowProd.productId);
+                        setReqQuantity('25');
+                        setReqReason('LOW_STOCK');
+                        setReqRemarks('');
+                        setStockRequestModalOpen(true);
+                      }}
+                      className="flex min-h-[72px] flex-col items-start justify-between rounded-xl border border-[var(--border)] bg-[var(--bg-raised)] p-3.5 text-left transition active:scale-[0.98]"
+                    >
+                      <PackagePlus className="h-5 w-5 text-[var(--accent)]" />
+                      <span className="mt-2 text-sm font-bold text-[var(--text-primary)]">
+                        {lang === 'gu' ? 'સ્ટોક વિનંતી' : 'Request Stock'}
+                      </span>
+                    </button>
+
+                    {!isAwh && (
+                      <button
+                        type="button"
+                        onClick={openAddBeneficiaryModal}
+                        className="flex min-h-[72px] flex-col items-start justify-between rounded-xl border border-[var(--border)] bg-[var(--bg-raised)] p-3.5 text-left transition active:scale-[0.98]"
+                      >
+                        <UserPlus className="h-5 w-5 text-[var(--accent)]" />
+                        <span className="mt-2 text-sm font-bold text-[var(--text-primary)]">
+                          {lang === 'gu' ? 'નવા લાભાર્થી ઉમેરો' : 'Add Beneficiary'}
+                        </span>
+                      </button>
+                    )}
                   </div>
                 </section>
 
@@ -914,9 +1101,27 @@ export function AwwApp() {
             {/* TAB 2: INVENTORY */}
             {tab === 'inventory' && (
               <div className="space-y-3">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <h1 className="text-lg font-bold">{t('navInventory')}</h1>
-                  <div className="flex gap-1.5">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const lowProd =
+                          inventory.find(
+                            (p) => p.reorderLevel === 'STOCKOUT' || p.reorderLevel === 'CRITICAL'
+                          ) || inventory[0];
+                        if (lowProd) setReqProductId(lowProd.productId);
+                        setReqQuantity('25');
+                        setReqReason('LOW_STOCK');
+                        setReqRemarks('');
+                        setStockRequestModalOpen(true);
+                      }}
+                      className="k-btn-saffron min-h-[34px] px-3 py-1 text-xs"
+                    >
+                      <PackagePlus className="h-3.5 w-3.5" />
+                      {lang === 'gu' ? 'સ્ટોક વિનંતી' : 'Request Stock'}
+                    </button>
                     {(['ALL', 'THR', 'HCM'] as const).map((cat) => (
                       <button
                         key={cat}
@@ -1022,44 +1227,90 @@ export function AwwApp() {
                       </div>
                     );
                   })}
+                {stockRequests.length > 0 && (
+                  <section className="k-card p-4">
+                    <h2 className="mb-2.5 text-sm font-bold">
+                      {lang === 'gu'
+                        ? `સ્ટોક વિનંતી સ્થિતિ (${stockRequests.length})`
+                        : `Centre Stock Requests (${stockRequests.length})`}
+                    </h2>
+                    <div className="space-y-2">
+                      {stockRequests.slice(0, 6).map((sr) => (
+                        <div
+                          key={sr.id}
+                          className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--border)] p-3 text-xs"
+                        >
+                          <div>
+                            <p className="font-mono-num font-bold">{sr.requestNumber}</p>
+                            <p className="text-[11px] text-[var(--text-secondary)]">
+                              {lang === 'gu' ? sr.product?.nameGu || sr.product?.name : sr.product?.name} •{' '}
+                              {sr.requestedQuantity} {sr.product?.unit}
+                              {sr.approvedQuantity != null && ` (Approved: ${sr.approvedQuantity})`}
+                            </p>
+                          </div>
+                          <StatusBadge
+                            variant={
+                              sr.status === 'COMPLETED' || sr.status === 'APPROVED' || sr.status === 'PARTIALLY_APPROVED'
+                                ? 'normal'
+                                : sr.status === 'REJECTED'
+                                  ? 'critical'
+                                  : 'warning'
+                            }
+                          >
+                            {sr.status}
+                          </StatusBadge>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                )}
               </div>
             )}
 
-            {/* TAB 3: DISTRIBUTION */}
+            {/* TAB 3: DISTRIBUTION — QR SCANNER IS 1ST THING */}
             {tab === 'distribution' && (
               <div className="space-y-4">
-                <div className="k-card p-4">
-                  <h1 className="text-base font-bold">
-                    {lang === 'gu'
-                      ? 'આધાર QR આધારિત પોષણ વિતરણ'
-                      : 'Aadhaar QR Beneficiary Distribution'}
-                  </h1>
-                  <p className="mt-1 text-xs text-[var(--text-secondary)]">
-                    {lang === 'gu'
-                      ? 'લાભાર્થીનો ઓફલાઇન XML QR સ્કેન કરો અને FEFO બેચમાંથી વિતરણ કરો.'
-                      : 'Scan beneficiary Aadhaar Offline XML QR and distribute from eligible FEFO stock.'}
-                  </p>
-                  <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                    <button
-                      type="button"
-                      onClick={() => setQrOpen(true)}
-                      className="k-btn-saffron w-full"
-                    >
-                      <QrCode className="h-5 w-5" />
-                      {t('actionScanQr')}
-                    </button>
+                <section className="k-card p-4">
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h1 className="text-base font-bold">
+                        {lang === 'gu'
+                          ? 'આધાર QR સ્કેન કરો અને વિતરણ કરો'
+                          : 'Scan Aadhaar QR for Nutrition Distribution'}
+                      </h1>
+                      <p className="text-xs text-[var(--text-secondary)]">
+                        {lang === 'gu'
+                          ? 'વિભાગ ખોલતાં જ કેમેરા સીધો QR સ્કેન કરવા તૈયાર છે.'
+                          : 'Live QR camera opens immediately — scan beneficiary credential to distribute one or more items.'}
+                      </p>
+                    </div>
                     {!isAwh && (
                       <button
                         type="button"
-                        onClick={() => setAddBenOpen(true)}
-                        className="k-btn-primary w-full"
+                        onClick={openAddBeneficiaryModal}
+                        className="k-btn-primary min-h-[38px] px-3 py-1.5 text-xs"
                       >
-                        <UserPlus className="h-5 w-5" />
+                        <UserPlus className="h-4 w-4" />
                         {lang === 'gu' ? 'નવા લાભાર્થી ઉમેરો' : 'Add Beneficiary'}
                       </button>
                     )}
                   </div>
-                </div>
+
+                  <QrScannerPanel
+                    active={
+                      tab === 'distribution' &&
+                      !qrOpen &&
+                      !benQrOpen &&
+                      !distModalOpen &&
+                      !addBenOpen &&
+                      !qrPreviewBen
+                    }
+                    onVerified={handleQrVerified}
+                    centreSalt={centreSalt}
+                    defaultMode="camera"
+                    cameraHeightClass="h-80 sm:h-96"
+                  />
+                </section>
 
                 {/* Registered Centre Beneficiaries & Sevika Approval Status */}
                 <section className="k-card p-4">
@@ -1091,7 +1342,7 @@ export function AwwApp() {
                                 {lang === 'gu' ? b.displayNameGu || b.displayName : b.displayName}
                               </p>
                               <p className="font-mono-num text-[11px] text-[var(--text-muted)]">
-                                {b.localReference} • ****{b.maskedIdLast4} • {b.beneficiaryCategory}
+                                {b.localReference} • YOB {b.yob || '—'} • {b.beneficiaryCategory}
                               </p>
                               {b.reviewRemarks && (
                                 <p className="mt-0.5 text-[11px] italic text-[var(--text-secondary)]">
@@ -1165,7 +1416,7 @@ export function AwwApp() {
                                 : dist.beneficiary.displayName}
                             </p>
                             <p className="font-mono-num text-[11px] text-[var(--text-muted)]">
-                              ****{dist.beneficiary.maskedIdLast4} • {dist.batch.batchNumber}
+                              {dist.beneficiary.localReference} • {dist.batch.batchNumber}
                             </p>
                           </div>
                           <div className="text-right">
@@ -1466,18 +1717,29 @@ export function AwwApp() {
         )}
       </ModalDialog>
 
-      {/* MODAL: Aadhaar QR Scanner */}
+      {/* MODAL: Aadhaar QR Scanner (Distribution) */}
       <QrScannerModal
         open={qrOpen}
         onClose={() => setQrOpen(false)}
         onVerified={handleQrVerified}
+        centreSalt={centreSalt}
+        defaultMode="camera"
       />
 
-      {/* MODAL: Distribution Confirmation */}
+      {/* MODAL: Aadhaar QR Scanner (Beneficiary Registration) */}
+      <QrScannerModal
+        open={benQrOpen}
+        onClose={() => setBenQrOpen(false)}
+        onVerified={handleBenQrScanned}
+        centreSalt={centreSalt}
+        defaultMode="camera"
+      />
+
+      {/* MODAL: Multi-Item Distribution Confirmation */}
       <ModalDialog
         open={distModalOpen}
         onClose={() => setDistModalOpen(false)}
-        title={lang === 'gu' ? 'પોષણ વિતરણ પુષ્ટિ' : 'Confirm Nutrition Distribution'}
+        title={lang === 'gu' ? 'પોષણ વિતરણ પુષ્ટિ' : 'Confirm Multi-Item Nutrition Distribution'}
         subtitle={verifiedLabel || undefined}
       >
         {matchedBeneficiary && (
@@ -1492,66 +1754,139 @@ export function AwwApp() {
                   : matchedBeneficiary.displayName}
               </p>
               <p className="font-mono-num text-xs text-[var(--text-secondary)]">
-                {matchedBeneficiary.localReference} • Masked ID: XXXX-XXXX-{matchedBeneficiary.maskedIdLast4}
+                {matchedBeneficiary.localReference} • YOB {matchedBeneficiary.yob || '—'}
               </p>
             </div>
 
-            <div>
-              <label className="mb-1 block text-xs font-semibold">Nutrition Product</label>
-              <select
-                value={distProductId}
-                onChange={(e) => {
-                  setDistProductId(e.target.value);
-                  setDistBatchId('');
-                }}
-                className="k-select"
-                required
-              >
-                {inventory.map((p) => (
-                  <option key={p.productId} value={p.productId}>
-                    {lang === 'gu' ? p.productNameGu : p.productName} ({p.usableStock} {p.unit} usable)
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {selectedDistProduct && (
-              <div>
-                <label className="mb-1 block text-xs font-semibold">
-                  Batch (Auto FEFO by default; expired batches blocked)
-                </label>
-                <select
-                  value={distBatchId}
-                  onChange={(e) => setDistBatchId(e.target.value)}
-                  className="k-select"
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-[var(--text-primary)]">
+                  {lang === 'gu' ? 'વિતરણ વસ્તુઓ (૧ કે વધુ)' : `Distribution Items (${distItems.length})`}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const unused =
+                      inventory.find(
+                        (p) =>
+                          p.usableStock > 0 && !distItems.some((row) => row.productId === p.productId)
+                      ) || inventory[0];
+                    if (!unused) return;
+                    setDistItems((prev) => [
+                      ...prev,
+                      { rowId: crypto.randomUUID(), productId: unused.productId, batchId: '', quantity: '1' },
+                    ]);
+                  }}
+                  className="k-btn-secondary min-h-[34px] px-2.5 py-1 text-xs"
                 >
-                  <option value="">Auto-select FEFO (Earliest Valid Expiry)</option>
-                  {selectedDistProduct.batches.map((b) => (
-                    <option key={b.batchId} value={b.batchId}>
-                      {b.batchNumber} — {b.balance} {selectedDistProduct.unit} (
-                      {b.isExpired
-                        ? 'EXPIRED - BLOCKED'
-                        : `Exp ${new Date(b.expiryDate).toLocaleDateString()}`}
-                      )
-                    </option>
-                  ))}
-                </select>
+                  <Plus className="h-3.5 w-3.5" />
+                  {lang === 'gu' ? 'વધુ વસ્તુ ઉમેરો' : 'Add Another Item'}
+                </button>
               </div>
-            )}
 
-            <div>
-              <label className="mb-1 block text-xs font-semibold">
-                Quantity ({selectedDistProduct?.unit || 'units'})
-              </label>
-              <input
-                type="number"
-                step="0.5"
-                min="0.5"
-                value={distQty}
-                onChange={(e) => setDistQty(e.target.value)}
-                className="k-input"
-                required
-              />
+              {distItems.map((row, idx) => {
+                const rowProd = inventory.find((p) => p.productId === row.productId);
+                return (
+                  <div
+                    key={row.rowId}
+                    className="space-y-2.5 rounded-xl border border-[var(--border)] bg-[var(--bg-sunken)]/50 p-3"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-bold text-[var(--text-secondary)]">
+                        Item #{idx + 1}
+                      </span>
+                      {distItems.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setDistItems((prev) => prev.filter((item) => item.rowId !== row.rowId))
+                          }
+                          className="inline-flex items-center gap-1 text-xs font-semibold text-[var(--danger)]"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" /> Remove
+                        </button>
+                      )}
+                    </div>
+
+                    <div>
+                      <label className="mb-1 block text-xs font-semibold">Nutrition Product</label>
+                      <select
+                        value={row.productId}
+                        onChange={(e) =>
+                          setDistItems((prev) =>
+                            prev.map((it) =>
+                              it.rowId === row.rowId
+                                ? { ...it, productId: e.target.value, batchId: '' }
+                                : it
+                            )
+                          )
+                        }
+                        className="k-select text-sm"
+                        required
+                      >
+                        {inventory.map((p) => (
+                          <option key={p.productId} value={p.productId}>
+                            {lang === 'gu' ? p.productNameGu : p.productName} ({p.usableStock} {p.unit} usable)
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {rowProd && (
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                        <div>
+                          <label className="mb-1 block text-xs font-semibold">
+                            Batch (Auto FEFO default)
+                          </label>
+                          <select
+                            value={row.batchId}
+                            onChange={(e) =>
+                              setDistItems((prev) =>
+                                prev.map((it) =>
+                                  it.rowId === row.rowId ? { ...it, batchId: e.target.value } : it
+                                )
+                              )
+                            }
+                            className="k-select text-xs"
+                          >
+                            <option value="">Auto-select FEFO (Earliest Valid)</option>
+                            {rowProd.batches.map((b) => (
+                              <option key={b.batchId} value={b.batchId}>
+                                {b.batchNumber} ({b.balance} {rowProd.unit}{' '}
+                                {b.isExpired
+                                  ? '- EXPIRED'
+                                  : `Exp ${new Date(b.expiryDate).toLocaleDateString()}`}
+                                )
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="mb-1 block text-xs font-semibold">
+                            Quantity ({rowProd.unit})
+                          </label>
+                          <input
+                            type="number"
+                            step="0.5"
+                            min="0.5"
+                            value={row.quantity}
+                            onChange={(e) =>
+                              setDistItems((prev) =>
+                                prev.map((it) =>
+                                  it.rowId === row.rowId ? { ...it, quantity: e.target.value } : it
+                                )
+                              )
+                            }
+                            className="k-input"
+                            required
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
 
             <div className="flex gap-2">
@@ -1723,7 +2058,7 @@ export function AwwApp() {
         </form>
       </ModalDialog>
 
-      {/* MODAL: Add Beneficiary Reference (Requires Mukhya Sevika Approval) */}
+      {/* MODAL: Add Beneficiary Reference (QR-First + Manual Fallback, Zero Aadhaar Digits) */}
       <ModalDialog
         open={addBenOpen}
         onClose={() => setAddBenOpen(false)}
@@ -1734,109 +2069,231 @@ export function AwwApp() {
             : 'Requires Mukhya Sevika (Supervisor) approval before ration distribution'
         }
       >
-        <form onSubmit={submitAddBeneficiary} className="space-y-3.5">
-          <div>
-            <label className="mb-1 block text-xs font-semibold">
-              {lang === 'gu' ? 'પૂરું નામ (અંગ્રેજી — QR સાથે મેળ ખાતું)' : 'Full Name (English — matches Aadhaar QR)'}
-            </label>
-            <input
-              type="text"
-              value={benName}
-              onChange={(e) => setBenName(e.target.value)}
-              placeholder="e.g. Sonalben Vijaybhai Gohil"
-              className="k-input"
-              required
-              minLength={2}
-            />
-          </div>
-
-          <div>
-            <label className="mb-1 block text-xs font-semibold">
-              {lang === 'gu' ? 'ગુજરાતીમાં નામ (વૈકલ્પિક)' : 'Name in Gujarati (Optional)'}
-            </label>
-            <input
-              type="text"
-              value={benNameGu}
-              onChange={(e) => setBenNameGu(e.target.value)}
-              placeholder="દા.ત. સોનલબેન વિજયભાઈ ગોહિલ"
-              className="k-input"
-            />
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="mb-1 block text-xs font-semibold">
-                {lang === 'gu' ? 'આધાર છેલ્લા ૪ અંક' : 'Aadhaar Last 4 Digits Only'}
-              </label>
-              <input
-                type="text"
-                inputMode="numeric"
-                maxLength={4}
-                pattern="\d{4}"
-                value={benLast4}
-                onChange={(e) => setBenLast4(e.target.value.replace(/\D/g, '').slice(0, 4))}
-                placeholder="4821"
-                className="k-input font-mono-num"
-                required
-              />
+        <div className="space-y-4">
+          {!benCredRef && benMode === 'qr' ? (
+            <div className="space-y-3">
+              <div className="rounded-xl border border-emerald-200 bg-[var(--accent-subtle)] p-4 text-center">
+                <ShieldCheck className="mx-auto h-8 w-8 text-[var(--accent)]" />
+                <p className="mt-2 text-sm font-bold text-[var(--text-primary)]">
+                  {lang === 'gu'
+                    ? 'આધાર ઓફલાઇન QR સ્કેન કરીને સરળ નોંધણી'
+                    : 'Quick Aadhaar Offline XML QR Registration'}
+                </p>
+                <p className="mt-1 text-xs text-[var(--text-secondary)]">
+                  {lang === 'gu'
+                    ? 'QR સ્થાનિક રીતે પાર્સ થાય છે. કોઈ આધાર નંબર કે છેલ્લા ૪ અંક દેખાડાતા કે સંગ્રહાતા નથી.'
+                    : 'XML parses 100% locally. No Aadhaar number or last-4 digits are stored or displayed.'}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setBenQrOpen(true)}
+                  className="k-btn-saffron mt-3 w-full"
+                >
+                  <QrCode className="h-5 w-5" />
+                  {lang === 'gu' ? 'આધાર QR સ્કેન કરો' : 'Scan Aadhaar QR'}
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={() => setBenMode('manual')}
+                className="k-btn-secondary w-full text-xs"
+              >
+                {lang === 'gu'
+                  ? 'QR ઉપલબ્ધ ન હોય તો મેન્યુઅલ નોંધણી'
+                  : 'QR Unavailable? Use Manual Registration'}
+              </button>
             </div>
-            <div>
-              <label className="mb-1 block text-xs font-semibold">
-                {lang === 'gu' ? 'જન્મ વર્ષ (YYYY)' : 'Birth Year (YYYY)'}
-              </label>
-              <input
-                type="text"
-                inputMode="numeric"
-                maxLength={4}
-                pattern="(19|20)\d{2}"
-                value={benYob}
-                onChange={(e) => setBenYob(e.target.value.replace(/\D/g, '').slice(0, 4))}
-                placeholder="1998"
-                className="k-input font-mono-num"
-                required
-              />
-            </div>
-          </div>
+          ) : (
+            <form onSubmit={submitAddBeneficiary} className="space-y-3.5">
+              {benCredRef && (
+                <div className="rounded-xl border border-emerald-200 bg-[var(--success-subtle)] p-3 text-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-[var(--success)]">
+                      QR Credential Verified Locally ({benScannedFormat})
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setBenCredRef(null);
+                        setBenScannedFormat(null);
+                      }}
+                      className="font-semibold underline"
+                    >
+                      Rescan
+                    </button>
+                  </div>
+                  <p className="mt-1 text-[var(--text-secondary)]">
+                    Confirm extracted details below and select beneficiary category.
+                  </p>
+                </div>
+              )}
 
+              <div>
+                <label className="mb-1 block text-xs font-semibold">
+                  {lang === 'gu' ? 'પૂરું નામ' : 'Full Name'}
+                </label>
+                <input
+                  type="text"
+                  value={benName}
+                  onChange={(e) => setBenName(e.target.value)}
+                  placeholder="e.g. Sonalben Vijaybhai Gohil"
+                  className="k-input"
+                  required
+                  minLength={2}
+                  readOnly={Boolean(benCredRef)}
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-xs font-semibold">
+                  {lang === 'gu' ? 'ગુજરાતીમાં નામ (વૈકલ્પિક)' : 'Name in Gujarati (Optional)'}
+                </label>
+                <input
+                  type="text"
+                  value={benNameGu}
+                  onChange={(e) => setBenNameGu(e.target.value)}
+                  placeholder="દા.ત. સોનલબેન વિજયભાઈ ગોહિલ"
+                  className="k-input"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-xs font-semibold">
+                  {lang === 'gu' ? 'જન્મ વર્ષ (YYYY)' : 'Birth Year (YYYY)'}
+                </label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={4}
+                  pattern="(19|20)\d{2}"
+                  value={benYob}
+                  onChange={(e) => setBenYob(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                  placeholder="1998"
+                  className="k-input font-mono-num"
+                  required
+                  readOnly={Boolean(benCredRef)}
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-xs font-semibold">
+                  {lang === 'gu' ? 'લાભાર્થી શ્રેણી' : 'Beneficiary Category'}
+                </label>
+                <select
+                  value={benCategory}
+                  onChange={(e) => setBenCategory(e.target.value)}
+                  className="k-select"
+                >
+                  <option value="PREGNANT_WOMAN">Pregnant Woman (ગર્ભવતી મહિલા)</option>
+                  <option value="LACTATING_MOTHER">Lactating Mother (ધાત્રી માતા)</option>
+                  <option value="CHILD_6M_3Y">Child 6m – 3y (બાળક ૬ માસ-૩ વર્ષ)</option>
+                  <option value="CHILD_3Y_6Y">Child 3y – 6y (બાળક ૩-૬ વર્ષ)</option>
+                  <option value="ADOLESCENT_GIRL">Adolescent Girl (કિશોરી)</option>
+                </select>
+              </div>
+
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setAddBenOpen(false)}
+                  className="k-btn-secondary flex-1"
+                >
+                  {t('cancel')}
+                </button>
+                <button type="submit" disabled={submitting} className="k-btn-primary flex-1">
+                  {submitting
+                    ? t('loading')
+                    : lang === 'gu'
+                      ? 'ખાતરી કરો અને નોંધો'
+                      : 'Confirm & Register'}
+                </button>
+              </div>
+            </form>
+          )}
+        </div>
+      </ModalDialog>
+
+      {/* MODAL: Request Stock Replenishment */}
+      <ModalDialog
+        open={stockRequestModalOpen}
+        onClose={() => setStockRequestModalOpen(false)}
+        title={lang === 'gu' ? 'સ્ટોક પુનઃપ્રાપ્તિ વિનંતી' : 'Request Stock Replenishment'}
+        subtitle={
+          lang === 'gu'
+            ? 'સુપરવાઇઝરની મંજૂરી પછી સપ્લાયર દ્વારા સ્ટોક મોકલાશે'
+            : 'Reviewed by Supervisor before Supplier dispatch (approval alone never alters ledger stock)'
+        }
+      >
+        <form onSubmit={submitStockRequest} className="space-y-4">
           <div>
-            <label className="mb-1 block text-xs font-semibold">
-              {lang === 'gu' ? 'લાભાર્થી શ્રેણી' : 'Beneficiary Category'}
-            </label>
+            <label className="mb-1 block text-xs font-semibold">Nutrition Product</label>
             <select
-              value={benCategory}
-              onChange={(e) => setBenCategory(e.target.value)}
+              value={reqProductId}
+              onChange={(e) => setReqProductId(e.target.value)}
               className="k-select"
+              required
             >
-              <option value="PREGNANT_WOMAN">Pregnant Woman (ગર્ભવતી મહિલા)</option>
-              <option value="LACTATING_MOTHER">Lactating Mother (ધાત્રી માતા)</option>
-              <option value="CHILD_6M_3Y">Child 6m – 3y (બાળક ૬ માસ-૩ વર્ષ)</option>
-              <option value="CHILD_3Y_6Y">Child 3y – 6y (બાળક ૩-૬ વર્ષ)</option>
-              <option value="ADOLESCENT_GIRL">Adolescent Girl (કિશોરી)</option>
+              {inventory.map((p) => (
+                <option key={p.productId} value={p.productId}>
+                  {lang === 'gu' ? p.productNameGu : p.productName} ({p.usableStock} {p.unit} left)
+                </option>
+              ))}
             </select>
           </div>
-
-          <p className="rounded-lg bg-[var(--accent-subtle)] px-3 py-2 text-[11px] text-[var(--accent)]">
-            {lang === 'gu'
-              ? 'સુરક્ષા નોંધ: ફક્ત છેલ્લા ૪ અંક અને SHA-256 હેશ સાચવવામાં આવે છે; પૂરો આધાર નંબર સંગ્રહિત થતો નથી.'
-              : 'Privacy: Only last 4 digits and a one-way SHA-256 reference hash are stored — never full Aadhaar numbers.'}
-          </p>
-
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="mb-1 block text-xs font-semibold">Quantity Requested</label>
+              <input
+                type="number"
+                step="1"
+                min="1"
+                max="5000"
+                value={reqQuantity}
+                onChange={(e) => setReqQuantity(e.target.value)}
+                className="k-input"
+                required
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-semibold">Reason</label>
+              <select
+                value={reqReason}
+                onChange={(e) => setReqReason(e.target.value as StockRequestReason)}
+                className="k-select"
+              >
+                <option value="LOW_STOCK">Low Stock / Stockout</option>
+                <option value="EXPECTED_DEMAND">Expected Demand Increase</option>
+                <option value="DAMAGED_STOCK">Damaged / Expired Stock</option>
+                <option value="OTHER">Other Operational Need</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-semibold">Remarks (Optional)</label>
+            <textarea
+              rows={2}
+              value={reqRemarks}
+              onChange={(e) => setReqRemarks(e.target.value)}
+              className="k-textarea"
+              placeholder="Any urgent delivery notes for Mukhya Sevika / Supplier..."
+            />
+          </div>
           <div className="flex gap-2">
-            <button type="button" onClick={() => setAddBenOpen(false)} className="k-btn-secondary flex-1">
+            <button
+              type="button"
+              onClick={() => setStockRequestModalOpen(false)}
+              className="k-btn-secondary flex-1"
+            >
               {t('cancel')}
             </button>
             <button type="submit" disabled={submitting} className="k-btn-primary flex-1">
-              {submitting
-                ? t('loading')
-                : lang === 'gu'
-                  ? 'સેવિકા મંજૂરી માટે મોકલો'
-                  : 'Submit for Sevika Approval'}
+              {submitting ? t('loading') : 'Submit Stock Request'}
             </button>
           </div>
         </form>
       </ModalDialog>
 
-      {/* MODAL: Beneficiary Synthetic Offline XML QR Card */}
+      {/* MODAL: Beneficiary Local Reference QR Card */}
       <ModalDialog
         open={Boolean(qrPreviewBen)}
         onClose={() => setQrPreviewBen(null)}
@@ -1851,7 +2308,7 @@ export function AwwApp() {
               className="h-52 w-52 rounded-xl border border-[var(--border)] bg-white p-2"
             />
             <p className="font-mono-num text-xs text-[var(--text-secondary)]">
-              XXXX-XXXX-{qrPreviewBen.beneficiary.maskedIdLast4} • YOB {qrPreviewBen.beneficiary.yob || '—'}
+              {qrPreviewBen.beneficiary.localReference} • YOB {qrPreviewBen.beneficiary.yob || '—'}
             </p>
             <a
               href={qrPreviewBen.dataUrl}

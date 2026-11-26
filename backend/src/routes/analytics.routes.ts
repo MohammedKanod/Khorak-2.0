@@ -92,7 +92,7 @@ analyticsRouter.get(
           prisma.distribution.findMany({
             where: { centreId: centre.id },
             include: {
-              beneficiary: { select: { localReference: true, displayName: true, displayNameGu: true, maskedIdLast4: true } },
+              beneficiary: { select: { localReference: true, displayName: true, displayNameGu: true } },
               product: { select: { name: true, nameGu: true, unit: true } },
               batch: { select: { batchNumber: true } },
             },
@@ -529,6 +529,8 @@ analyticsRouter.get(
         dispatches,
         distributions,
         beneficiaries,
+        appeals,
+        stockRequests,
         nutritionRows,
       ] = await Promise.all([
         computeAggregatedMetrics(scopeWhere),
@@ -660,7 +662,6 @@ analyticsRouter.get(
             localReference: true,
             displayName: true,
             displayNameGu: true,
-            maskedIdLast4: true,
             yob: true,
             beneficiaryCategory: true,
             protectedCredentialReference: true,
@@ -673,6 +674,53 @@ analyticsRouter.get(
             reviewer: { select: { id: true, name: true, role: true } },
           },
           orderBy: [{ status: 'asc' }, { createdAt: 'desc' }],
+        }),
+        prisma.dispatchAppeal.findMany({
+          where: { centre: scopeWhere },
+          include: {
+            dispatch: { select: { id: true, dispatchReference: true, dispatchDate: true } },
+            discrepancyCase: { select: { id: true, difference: true, status: true } },
+            supplier: { select: { id: true, name: true, code: true } },
+            centre: { select: { id: true, name: true, nameGu: true, code: true } },
+            product: { select: { id: true, name: true, nameGu: true, unit: true } },
+            batch: { select: { id: true, batchNumber: true } },
+            creator: { select: { id: true, name: true, role: true } },
+            responder: { select: { id: true, name: true, role: true } },
+            resolver: { select: { id: true, name: true, role: true } },
+            history: {
+              include: { actor: { select: { id: true, name: true, role: true } } },
+              orderBy: { createdAt: 'asc' },
+            },
+          },
+          orderBy: { updatedAt: 'desc' },
+          take: 150,
+        }),
+        prisma.stockRequest.findMany({
+          where: { centre: scopeWhere },
+          include: {
+            centre: {
+              select: {
+                id: true,
+                name: true,
+                nameGu: true,
+                code: true,
+                sector: { select: { name: true, block: { select: { name: true } } } },
+              },
+            },
+            product: { select: { id: true, name: true, nameGu: true, unit: true, category: true } },
+            requester: { select: { id: true, name: true, role: true } },
+            reviewer: { select: { id: true, name: true, role: true } },
+            dispatches: {
+              select: { id: true, dispatchReference: true, status: true, supplierId: true },
+              orderBy: { createdAt: 'desc' },
+            },
+            history: {
+              include: { actor: { select: { id: true, name: true, role: true } } },
+              orderBy: { createdAt: 'asc' },
+            },
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 150,
         }),
         isDistrictLevel
           ? prisma.nutritionAggregate.findMany({
@@ -783,6 +831,8 @@ analyticsRouter.get(
             totalTransactions: distributions.length,
           },
           beneficiaries,
+          appeals,
+          stockRequests,
         },
       });
     } catch (err) {
