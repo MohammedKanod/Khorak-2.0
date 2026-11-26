@@ -26,10 +26,17 @@ export function createApp() {
     })
   );
 
-  const allowedOrigins = env.frontendUrl
-    .split(',')
-    .map((s) => s.trim().replace(/\/+$/, ''))
-    .filter(Boolean);
+  const allowedOrigins = Array.from(
+    new Set([
+      ...env.frontendUrl
+        .split(',')
+        .map((s) => s.trim().replace(/\/+$/, ''))
+        .filter(Boolean),
+      'https://localhost',
+      'http://localhost',
+      'capacitor://localhost',
+    ])
+  );
 
   app.use(
     cors({
