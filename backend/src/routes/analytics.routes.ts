@@ -218,6 +218,7 @@ async function computeAggregatedMetrics(centreFilter: Record<string, unknown>) {
       centreName: c.name,
       centreNameGu: c.nameGu,
       code: c.code,
+      sectorId: c.sector.id,
       sectorName: c.sector.name,
       blockId,
       blockName: c.sector.block.name,
@@ -297,7 +298,7 @@ analyticsRouter.get(
       const requestedBlockId = typeof req.query.blockId === 'string' ? req.query.blockId : undefined;
       let scopeWhere = buildCentreScopeWhere(req.user!);
       if (requestedBlockId && (req.user!.role === Role.DPO || req.user!.role === Role.DDO)) {
-        scopeWhere = { ...scopeWhere, sector: { blockId: requestedBlockId } };
+        scopeWhere = { AND: [scopeWhere, { sector: { blockId: requestedBlockId } }] };
       }
 
       const data = await computeAggregatedMetrics(scopeWhere);
@@ -319,7 +320,7 @@ analyticsRouter.get(
       const nutritionRows = await prisma.nutritionAggregate.findMany({
         where: req.user!.districtId
           ? { block: { districtId: req.user!.districtId } }
-          : undefined,
+          : { blockId: '__none__' },
         include: { block: { select: { id: true, name: true } } },
         orderBy: [{ reportingPeriod: 'asc' }, { block: { name: 'asc' } }],
       });
@@ -489,7 +490,7 @@ analyticsRouter.get(
           ? { blockId: req.user!.blockId ?? '__none__' }
           : req.user!.districtId
             ? { block: { districtId: req.user!.districtId } }
-            : {};
+            : { blockId: '__none__' };
 
       const rows = await prisma.nutritionAggregate.findMany({
         where: blockFilter,
@@ -726,7 +727,7 @@ analyticsRouter.get(
           ? prisma.nutritionAggregate.findMany({
               where: req.user!.districtId
                 ? { block: { districtId: req.user!.districtId } }
-                : undefined,
+                : { blockId: '__none__' },
               include: { block: { select: { id: true, name: true } } },
               orderBy: [{ reportingPeriod: 'asc' }, { block: { name: 'asc' } }],
             })

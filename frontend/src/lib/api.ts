@@ -1,12 +1,16 @@
 import { Capacitor } from '@capacitor/core';
 
-const DEFAULT_NATIVE_API_URL = 'https://khorak-20-frontend.vercel.app';
+// Both web and native builds use this same backend origin.
+const NATIVE_API_CONFIGURED = Boolean(import.meta.env.VITE_API_BASE_URL);
 const API_BASE_URL = (
   import.meta.env.VITE_API_BASE_URL ||
-  (Capacitor.isNativePlatform() ? DEFAULT_NATIVE_API_URL : '')
+  ''
 ).replace(/\/+$/, '');
 
 export function apiUrl(path: string): string {
+  if (Capacitor.isNativePlatform() && !NATIVE_API_CONFIGURED) {
+    throw new Error('Set VITE_API_BASE_URL to the shared backend URL and rebuild the app.');
+  }
   if (/^https?:\/\//i.test(path)) return path;
   return `${API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`;
 }
@@ -60,7 +64,7 @@ async function refreshAccessToken(): Promise<string | null> {
         body: JSON.stringify({ refreshToken }),
       });
       if (!res.ok) {
-        clearStoredTokens();
+        if (res.status === 401 || res.status === 403) clearStoredTokens();
         return null;
       }
       const json = await res.json().catch(() => null);
@@ -99,7 +103,7 @@ export async function apiRequest<T>(
   let response: Response;
   const targetUrl = apiUrl(path);
   try {
-    response = await fetch(targetUrl, { ...options, headers });
+    response = await fetch(targetUrl, { cache: 'no-store', ...options, headers, signal: options?.signal ?? AbortSignal.timeout(20000) });
   } catch {
     throw new ApiError('Network unavailable — device appears offline', 0, 'NETWORK_OFFLINE', true);
   }
@@ -109,7 +113,7 @@ export async function apiRequest<T>(
     if (newAccess) {
       headers.Authorization = `Bearer ${newAccess}`;
       try {
-        response = await fetch(targetUrl, { ...options, headers });
+        response = await fetch(targetUrl, { cache: 'no-store', ...options, headers, signal: options?.signal ?? AbortSignal.timeout(20000) });
       } catch {
         throw new ApiError('Network unavailable', 0, 'NETWORK_OFFLINE', true);
       }
@@ -131,6 +135,15 @@ export async function apiRequest<T>(
     );
   }
 
+  const method = (options?.method ?? 'GET').toUpperCase();
+  if (!['GET', 'HEAD'].includes(method) && !path.startsWith('/api/auth/') && path !== '/api/sync/push') {
+    window.dispatchEvent(new Event('khorak:data-changed'));
+    if (typeof BroadcastChannel !== 'undefined') {
+      const channel = new BroadcastChannel('khorak:data-changed');
+      channel.postMessage('refresh');
+      channel.close();
+    }
+  }
   return json as T;
 }
 

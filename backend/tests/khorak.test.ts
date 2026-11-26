@@ -22,6 +22,7 @@ describe('KHORAK Acceptance & Supply Chain Integrity Tests', () => {
   let supplierToken: string;
   let supervisorToken: string;
   let ddoToken: string;
+  let cdpoToken: string;
 
   let vavdiCentreId: string;
   let vavdiSalt: string;
@@ -38,6 +39,7 @@ describe('KHORAK Acceptance & Supply Chain Integrity Tests', () => {
     supplierToken = await loginAs('supplier.gcmmfl');
     supervisorToken = await loginAs('sup.godhra');
     ddoToken = await loginAs('ddo.panchmahal');
+    cdpoToken = await loginAs('cdpo.godhra');
 
     const centre = await prisma.anganwadiCentre.findUniqueOrThrow({
       where: { code: 'AWC-GDR-01' },
@@ -680,9 +682,10 @@ describe('KHORAK Acceptance & Supply Chain Integrity Tests', () => {
 
     const supApprove = await request(app)
       .post(`/api/stock-requests/${reqId}/review`)
-      .set('Authorization', `Bearer ${supervisorToken}`)
+      .set('Authorization', `Bearer ${cdpoToken}`)
       .send({
         decision: 'PARTIAL_APPROVE',
+        assignedSupplierId: gcmmflId,
         approvedQuantity: 20,
         remarks: 'Approved 20 kg for immediate dispatch',
       });

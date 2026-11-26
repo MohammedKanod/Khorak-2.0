@@ -1,4 +1,5 @@
 export type Role =
+  | 'GUARDIAN'
   | 'AWW'
   | 'AWH'
   | 'SUPPLIER'

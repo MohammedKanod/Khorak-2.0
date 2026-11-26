@@ -82,6 +82,19 @@ export async function requireAuth(
       districtId: user.districtId,
       supplierId: user.supplierId,
     };
+    if (user.role === Role.GUARDIAN && !/^\/api\/(?:auth|guardian)(?:\/|$)/.test(req.originalUrl.split('?')[0])) {
+      throw new AppError(403, 'GUARDIAN_SCOPE_ONLY', 'Guardians can only access their own support requests');
+    }
+    // This applies to every authenticated route, including offline sync uploads.
+    const authenticationRoute = req.originalUrl.split('?')[0].startsWith('/api/auth/');
+    if (!authenticationRoute && !['GET', 'HEAD', 'OPTIONS'].includes(req.method) &&
+        ([Role.AWH, Role.DPO, Role.TDO, Role.DDO] as Role[]).includes(user.role)) {
+      throw new AppError(403, 'READ_ONLY_ROLE', 'Your role has view and export access only');
+    }
+    if (!authenticationRoute && user.role === Role.AWH &&
+        req.originalUrl.split('?')[0] !== `/api/inventory/${user.centreId}`) {
+      throw new AppError(403, 'HELPER_STOCK_ONLY', 'Helpers can view their own centre stock only');
+    }
     next();
   } catch (err) {
     if (err instanceof AppError) {
@@ -125,7 +138,7 @@ export function buildCentreScopeWhere(
     case Role.DDO:
       return user.districtId
         ? { sector: { block: { districtId: user.districtId } } }
-        : {};
+        : { id: '__none__' };
     case Role.SUPPLIER:
       // Suppliers do not browse arbitrary centre inventories
       return { id: '__none__' };
@@ -140,8 +153,7 @@ export async function assertCentreInScope(
 ) {
   const centre = await prisma.anganwadiCentre.findFirst({
     where: {
-      id: centreId,
-      ...buildCentreScopeWhere(user),
+      AND: [{ id: centreId }, buildCentreScopeWhere(user)],
     },
     include: {
       sector: {

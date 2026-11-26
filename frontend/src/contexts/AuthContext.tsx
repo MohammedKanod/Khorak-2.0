@@ -9,14 +9,14 @@ import {
   getStoredTokens,
   setStoredTokens,
 } from '../lib/api';
-import { checkServerConnectivity, syncOutboxOperations } from '../lib/offlineDb';
+import { checkServerConnectivity } from '../lib/offlineDb';
 
 interface AuthContextValue {
   user: UserProfile | null;
   loading: boolean;
   isOnline: boolean;
   refreshConnectivity: () => Promise<boolean>;
-  login: (username: string, password: string) => Promise<UserProfile>;
+  login: (username: string, password: string, portal?: 'staff' | 'guardian') => Promise<UserProfile>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
 }
@@ -44,12 +44,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const refreshConnectivity = async (): Promise<boolean> => {
     const reachable = await checkServerConnectivity();
-    setIsOnline((prev) => {
-      if (!prev && reachable && user?.centreId) {
-        syncOutboxOperations(user.centreId).catch(() => undefined);
-      }
-      return reachable;
-    });
+    setIsOnline(reachable);
     return reachable;
   };
 
@@ -71,6 +66,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const networkListener = Capacitor.isNativePlatform()
       ? Network.addListener('networkStatusChange', (status) => {
           if (status.connected) {
+            window.dispatchEvent(new Event('khorak:data-changed'));
             refreshConnectivity().catch(() => undefined);
           } else {
             setIsOnline(false);
@@ -102,8 +98,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         localStorage.setItem(USER_CACHE_KEY, JSON.stringify(res.data));
       }
     } catch (err: unknown) {
-      const anyErr = err as { isOffline?: boolean };
-      if (!anyErr?.isOffline) {
+      const anyErr = err as { status?: number };
+      if (anyErr.status === 401 || anyErr.status === 403) {
         clearStoredTokens();
         setUser(null);
       }
@@ -116,14 +112,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     refreshUser();
   }, []);
 
-  const login = async (username: string, password: string): Promise<UserProfile> => {
+  useEffect(() => {
+    const updateSession = (event: StorageEvent) => {
+      if (event.key !== USER_CACHE_KEY && event.key !== null) return;
+      try { setUser(JSON.parse(localStorage.getItem(USER_CACHE_KEY) || 'null')); }
+      catch { setUser(null); }
+    };
+    window.addEventListener('storage', updateSession);
+    return () => window.removeEventListener('storage', updateSession);
+  }, []);
+
+  const login = async (username: string, password: string, portal?: 'staff' | 'guardian'): Promise<UserProfile> => {
     const res = await apiRequest<{
       success: boolean;
       data: { accessToken: string; refreshToken: string; user: UserProfile };
     }>('/api/auth/login', {
       method: 'POST',
       skipAuth: true,
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ username, password, portal }),
     });
 
     if (!res?.data?.accessToken || !res?.data?.user) {

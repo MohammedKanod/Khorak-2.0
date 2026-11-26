@@ -1,0 +1,59 @@
+import { useState } from 'react';
+import { Baby, CheckCircle2, ClipboardList, HeartHandshake, LogOut, MapPin, Plus, Send, Wheat } from 'lucide-react';
+import { useAuth } from '../../contexts/AuthContext';
+import { apiRequest } from '../../lib/api';
+import { useLiveRefresh } from '../../hooks/useLiveRefresh';
+import { LiveSyncStatus } from '../../components/LiveSyncStatus';
+import { FamilyCentre, FamilyRequest, categoryLabels, statusLabels } from './types';
+import { LoadingSkeleton } from '../../components/ui';
+
+export function GuardianApp() {
+  const { user, logout } = useAuth();
+  const [view, setView] = useState<'home' | 'request' | 'requests'>('home');
+  const [centres, setCentres] = useState<FamilyCentre[]>([]);
+  const [requests, setRequests] = useState<FamilyRequest[]>([]);
+  const [ready, setReady] = useState(false);
+  const [centreId, setCentreId] = useState('');
+  const [category, setCategory] = useState('CHILD_6M_3Y');
+  const [name, setName] = useState('');
+  const [year, setYear] = useState('');
+  const [message, setMessage] = useState('');
+  const [key, setKey] = useState(() => crypto.randomUUID());
+  const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState('');
+  const [respondTo, setRespondTo] = useState<string | null>(null);
+  const [response, setResponse] = useState('');
+  const sync = useLiveRefresh(async () => {
+    const [directory, history] = await Promise.all([apiRequest<{ data: FamilyCentre[] }>('/api/guardian/centres'), apiRequest<{ data: FamilyRequest[] }>('/api/guardian/requests')]);
+    setCentres(directory.data); setRequests(history.data); setReady(true);
+  });
+  async function submit(event: React.FormEvent) {
+    event.preventDefault(); setBusy(true); setFeedback('');
+    try {
+      await apiRequest('/api/guardian/requests', { method: 'POST', body: JSON.stringify({ centreId, category, beneficiaryName: name, birthYear: Number(year), message, idempotencyKey: key }) });
+      await sync.refresh(); setView('requests'); setName(''); setYear(''); setMessage(''); setKey(crypto.randomUUID());
+      setFeedback('Your request has reached the centre. You can track its progress below.');
+    } catch (err) { setFeedback(err instanceof Error ? err.message : 'Unable to send request'); }
+    finally { setBusy(false); }
+  }
+  async function sendResponse(event: React.FormEvent) {
+    event.preventDefault(); setBusy(true);
+    try { await apiRequest(`/api/guardian/requests/${respondTo}/respond`, { method: 'POST', body: JSON.stringify({ message: response }) }); setRespondTo(null); setResponse(''); await sync.refresh(); setFeedback('Your response has been sent to the centre.'); }
+    catch (err) { setFeedback(err instanceof Error ? err.message : 'Unable to respond'); }
+    finally { setBusy(false); }
+  }
+  const selectedCentre = centres.find(c => c.id === centreId);
+  return <div className="family-shell"><header className="family-header"><div className="brand-lockup"><span className="brand-symbol"><Wheat size={23} /></span><span><strong>KHORAK</strong><small>Family support</small></span></div><button className="k-btn-secondary" aria-label="Sign out" onClick={logout}><LogOut size={18} /><span className="hidden sm:inline">Sign out</span></button></header>
+    <main className="family-main"><nav className="family-nav" aria-label="Family navigation">{([['home', 'Home', HeartHandshake], ['request', 'Request support', Plus], ['requests', 'My requests', ClipboardList]] as const).map(([id, label, Icon]) => <button key={id} aria-current={view === id ? 'page' : undefined} onClick={() => { setView(id); setFeedback(''); }}><Icon size={18} />{label}</button>)}</nav>
+      <LiveSyncStatus {...sync} />
+      {feedback && <p role="status" className="k-card border-l-4 border-l-[var(--accent)] p-4">{feedback}</p>}
+      {!ready ? <LoadingSkeleton rows={3} /> : view === 'home' ? <>
+        <section className="family-hero"><div><span className="form-eyebrow">YOUR FAMILY, SUPPORTED</span><h1>Hello, {user?.name.split(' ')[0]}.<br /><span>Care starts here.</span></h1><p>Connect with your Anganwadi centre for nutrition support for your child, yourself or a family member.</p><button className="k-btn-primary mt-6" onClick={() => setView('request')}><Plus size={18} />Request nutrition support</button></div><div className="family-hero-icon" aria-hidden="true"><HeartHandshake size={110} strokeWidth={1} /></div></section>
+        <section className="grid gap-4 sm:grid-cols-2"><button className="k-card flex items-center gap-4 p-5 text-left" onClick={() => setView('requests')}><span className="rounded-xl bg-amber-50 p-3 text-amber-700"><ClipboardList size={24} /></span><span><strong className="block text-2xl">{requests.filter(r => ['PENDING', 'NEEDS_INFO'].includes(r.status)).length}</strong><span className="text-sm text-[var(--text-secondary)]">Requests in progress</span></span></button><button className="k-card flex items-center gap-4 p-5 text-left" onClick={() => setView('requests')}><span className="rounded-xl bg-emerald-50 p-3 text-emerald-700"><CheckCircle2 size={24} /></span><span><strong className="block text-2xl">{requests.filter(r => r.status === 'APPROVED').length}</strong><span className="text-sm text-[var(--text-secondary)]">Ready for a centre visit</span></span></button></section>
+        <section><p className="form-eyebrow">HOW WE CAN HELP</p><h2 className="mt-2 text-2xl font-bold">Support for every stage</h2><div className="mt-5 grid gap-4 sm:grid-cols-2"><article className="k-card p-6"><Baby className="mb-4 text-[var(--accent)]" size={28} /><h3 className="text-lg font-bold">For your child</h3><p className="mt-2 text-sm text-[var(--text-secondary)]">Ask your centre about age-appropriate supplementary nutrition and Anganwadi services for children under six.</p><button className="mt-4 text-sm font-bold text-[var(--accent)] underline underline-offset-4" onClick={() => { setCategory('CHILD_6M_3Y'); setView('request'); }}>Request child support</button></article><article className="k-card p-6"><HeartHandshake className="mb-4 text-[var(--accent)]" size={28} /><h3 className="text-lg font-bold">For mothers</h3><p className="mt-2 text-sm text-[var(--text-secondary)]">Request nutrition support during pregnancy or lactation. Centre staff will explain the services available to you.</p><button className="mt-4 text-sm font-bold text-[var(--accent)] underline underline-offset-4" onClick={() => { setCategory('PREGNANT_WOMAN'); setView('request'); }}>Request maternal support</button></article></div></section>
+        <section className="k-card p-6"><h2 className="text-lg font-bold">A simple path to support</h2><ol className="family-steps"><li><span>1</span><strong>Choose your centre</strong><p>Select the Anganwadi that serves your area.</p></li><li><span>2</span><strong>Send a request</strong><p>Share a few details. No Aadhaar upload is needed here.</p></li><li><span>3</span><strong>Meet your worker</strong><p>Follow the centre’s instructions for verification and collection.</p></li></ol></section>
+      </> : view === 'request' ? <section className="k-card p-5 sm:p-8"><p className="form-eyebrow">LET’S FIND THE RIGHT SUPPORT</p><h1 className="mt-2 text-2xl font-bold">New nutrition-support request</h1><p className="mt-2 text-sm text-[var(--text-secondary)]">Your selected centre will verify eligibility and explain the next steps. Submitting a request does not reserve stock.</p><form onSubmit={submit} className="mt-7 grid gap-5 sm:grid-cols-2"><label className="sm:col-span-2 text-sm font-semibold">Anganwadi centre<select className="k-select mt-2" value={centreId} onChange={e => setCentreId(e.target.value)} required><option value="">Choose the centre in your area</option>{centres.map(c => <option key={c.id} value={c.id}>{c.name} · {c.sector.block.name}</option>)}</select></label>{selectedCentre && <p className="sm:col-span-2 flex items-center gap-2 rounded-xl bg-[var(--bg)] p-3 text-sm"><MapPin size={17} />{selectedCentre.location} · {selectedCentre.code}</p>}<label className="text-sm font-semibold">Who needs support?<select className="k-select mt-2" value={category} onChange={e => setCategory(e.target.value)}>{Object.entries(categoryLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label className="text-sm font-semibold">Person’s name<input className="k-input mt-2" value={name} onChange={e => setName(e.target.value)} required minLength={2} maxLength={100} /></label><label className="text-sm font-semibold">Birth year<input className="k-input mt-2" inputMode="numeric" type="number" min="1900" max={new Date().getFullYear()} value={year} onChange={e => setYear(e.target.value)} required /></label><div className="self-end text-sm text-[var(--text-muted)]">Only the name and birth year are needed. Please do not enter Aadhaar numbers or medical documents.</div><label className="sm:col-span-2 text-sm font-semibold">Anything your worker should know? <span className="font-normal">(optional)</span><textarea className="k-textarea mt-2" rows={3} value={message} onChange={e => setMessage(e.target.value)} maxLength={500} placeholder="For example, a suitable time to visit the centre." /></label><p className="sm:col-span-2 text-sm text-[var(--text-secondary)]">These details will be shared with authorised staff at the selected centre and supervising officers to process your request.</p><button className="k-btn-primary sm:col-span-2" disabled={busy || !centreId}><Send size={17} />{busy ? 'Sending…' : 'Send request to centre'}</button></form></section> : <section><p className="form-eyebrow">EVERY STEP, IN ONE PLACE</p><h1 className="mt-2 mb-5 text-2xl font-bold">My requests</h1>{requests.length === 0 ? <div className="k-card p-10 text-center"><ClipboardList className="mx-auto text-[var(--accent)]" size={36} /><h2 className="mt-4 text-xl font-bold">Your first step starts here</h2><p className="mt-2 text-[var(--text-secondary)]">You haven’t sent a support request yet.</p><button className="k-btn-primary mt-5" onClick={() => setView('request')}>Request support</button></div> : <div className="space-y-4">{requests.map(r => <article className="k-card p-5 sm:p-6" key={r.id}><div className="flex flex-wrap items-center justify-between gap-2"><span className={`request-status status-${r.status.toLowerCase()}`}>{statusLabels[r.status]}</span><span className="text-sm text-[var(--text-muted)]">{r.reference}</span></div><h2 className="mt-4 text-xl font-bold">{r.beneficiaryName}</h2><p className="mt-1 text-sm text-[var(--text-secondary)]">{categoryLabels[r.category]} · {r.centre.name}</p><p className="mt-2 text-sm text-[var(--text-muted)]">Submitted {new Date(r.createdAt).toLocaleDateString()}</p>{r.reviewRemarks && <div className="mt-4 rounded-xl bg-[var(--accent-subtle)] p-4"><strong className="text-sm">Message from your centre</strong><p className="mt-1 text-sm">{r.reviewRemarks}</p></div>}{r.status === 'APPROVED' && <p className="mt-4 text-sm">Visit the centre for beneficiary verification and collection arrangements. Food is recorded only when the worker completes the handover.</p>}{r.status === 'NEEDS_INFO' && (respondTo === r.id ? <form className="mt-4 space-y-3" onSubmit={sendResponse}><label className="block text-sm font-semibold">Your response<textarea className="k-textarea mt-2" value={response} onChange={e => setResponse(e.target.value)} minLength={5} maxLength={500} required /></label><button className="k-btn-primary" disabled={busy}>Send response</button></form> : <button className="k-btn-secondary mt-4" onClick={() => { setRespondTo(r.id); setResponse(''); }}>Respond to centre</button>)}</article>)}</div>}</section>}
+      <footer className="family-footer">KHORAK · Connecting families with Anganwadi care<br />Demonstration service · Synthetic centre dataset</footer>
+    </main>
+  </div>;
+}

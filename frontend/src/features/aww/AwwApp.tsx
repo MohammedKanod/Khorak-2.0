@@ -1,3 +1,6 @@
+import { FamilyRequestInbox } from '../guardian/FamilyRequestInbox';
+import { useLiveRefresh } from '../../hooks/useLiveRefresh';
+import { LiveSyncStatus } from '../../components/LiveSyncStatus';
 import React, { useEffect, useState } from 'react';
 import QRCode from 'qrcode';
 import {
@@ -146,17 +149,19 @@ export function AwwApp() {
   const [invCategory, setInvCategory] = useState<'ALL' | 'THR' | 'HCM'>('ALL');
   const [expandedProductId, setExpandedProductId] = useState<string | null>(null);
 
-  async function loadData() {
+  async function fetchPortalData(background: boolean) {
     if (!centreId) return;
-    setLoading(true);
+    if (!background) setLoading(true);
     try {
       const outboxItems = await listOutboxOperations(centreId);
       setOutbox(outboxItems);
 
       const reachable = await refreshConnectivity();
       if (reachable) {
+        if (!isAwh) await syncOutboxOperations(centreId);
+        setOutbox(await listOutboxOperations(centreId));
         const [snap, ledgerRes, reqRes] = await Promise.all([
-          pullCentreSnapshot(centreId),
+          pullCentreSnapshot(centreId, false),
           apiRequest<{ success: boolean; data: typeof ledgerEvents }>(
             `/api/inventory/${centreId}/ledger`
           ).catch(() => null),
@@ -187,6 +192,7 @@ export function AwwApp() {
           setStockRequests(cached.stockRequests ?? []);
           if (cached.offlineCredentialSalt) setCentreSalt(cached.offlineCredentialSalt);
         }
+        throw new Error('Offline — showing saved centre data. Reconnect to sync.');
       }
     } catch (err) {
       const cached = await getCachedSnapshot(centreId);
@@ -199,19 +205,19 @@ export function AwwApp() {
         setStockRequests(cached.stockRequests ?? []);
         if (cached.offlineCredentialSalt) setCentreSalt(cached.offlineCredentialSalt);
       } else {
-        setBanner({
+        if (!background) setBanner({
           type: 'error',
           text: err instanceof Error ? err.message : 'Unable to load centre data',
         });
       }
+      throw err;
     } finally {
       setLoading(false);
     }
   }
 
-  useEffect(() => {
-    loadData();
-  }, [centreId]);
+  const liveSync = useLiveRefresh(fetchPortalData);
+  const loadData = () => liveSync.refresh();
 
   async function handleSyncNow() {
     if (!centreId) return;
@@ -828,6 +834,7 @@ export function AwwApp() {
       </header>
 
       <main className="mx-auto max-w-lg space-y-4 px-4 py-4">
+        <LiveSyncStatus {...liveSync} />
         <SyncStatusPill
           isOnline={isOnline}
           pendingCount={pendingOutboxCount}
@@ -854,6 +861,8 @@ export function AwwApp() {
             </button>
           </div>
         )}
+
+        {tab === 'home' && <details className="k-card p-4"><summary className="cursor-pointer font-semibold text-[var(--accent)]">{lang === 'gu' ? 'વાલીઓની સહાય અરજીઓ' : 'Family support requests'}</summary><div className="mt-4"><FamilyRequestInbox /></div></details>}
 
         {loading ? (
           <LoadingSkeleton rows={4} />

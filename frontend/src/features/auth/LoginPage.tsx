@@ -1,193 +1,64 @@
-import React, { useState } from 'react';
-import { Eye, EyeOff, Lock, ShieldCheck } from 'lucide-react';
+import { useState } from 'react';
+import { ArrowUpRight, Eye, EyeOff, HeartHandshake, Leaf, LockKeyhole, ShieldCheck, Users, Wheat } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useI18n } from '../../locales/translations';
+import { apiRequest } from '../../lib/api';
 
-const DEMO_ACCOUNTS = [
-  { role: 'AWW', label: 'AWW — Vavdi Bujarg (ગુજરાતી મોબાઇલ)', username: 'aww.vavdi' },
-  { role: 'AWH', label: 'AWH — Vavdi Helper (સરળ મોબાઇલ)', username: 'awh.vavdi' },
-  { role: 'SUPPLIER', label: 'Supplier — GCMMFL Panchmahal', username: 'supplier.gcmmfl' },
-  { role: 'SUPERVISOR', label: 'Supervisor — Mukhya Sevika (Godhra)', username: 'sup.godhra' },
-  { role: 'CDPO', label: 'CDPO — Godhra Block', username: 'cdpo.godhra' },
-  { role: 'TDO', label: 'TDO / BDO — Godhra Block', username: 'tdo.godhra' },
-  { role: 'DPO', label: 'DPO — Panchmahal District', username: 'dpo.panchmahal' },
-  { role: 'DDO', label: 'DDO — Panchmahal Executive', username: 'ddo.panchmahal' },
+const accounts = [
+  ['AWW', 'Centre worker', 'aww.vavdi'], ['AWH', 'Centre helper · view only', 'awh.vavdi'],
+  ['Supplier', 'Dispatch & delivery', 'supplier.gcmmfl'], ['Supervisor', 'Sector supervision', 'sup.godhra'],
+  ['CDPO', 'Block operations', 'cdpo.godhra'], ['TDO', 'Block oversight', 'tdo.godhra'],
+  ['DPO', 'District programme', 'dpo.panchmahal'], ['DDO', 'District executive', 'ddo.panchmahal'],
 ];
 
 export function LoginPage() {
   const { login, isOnline } = useAuth();
-  const { lang, setLang, t } = useI18n();
-
+  const { lang, setLang } = useI18n();
+  const gu = lang === 'gu';
+  const [portal, setPortal] = useState<'staff' | 'guardian'>('staff');
+  const [register, setRegister] = useState(false);
+  const [name, setName] = useState('');
   const [username, setUsername] = useState('aww.vavdi');
   const [password, setPassword] = useState('Khorak@2026');
-  const [showPassword, setShowPassword] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setSubmitting(true);
-    setError(null);
-    try {
-      await login(username, password);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Login failed');
-    } finally {
-      setSubmitting(false);
-    }
+  const [visible, setVisible] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  function choosePortal(value: 'staff' | 'guardian') {
+    setPortal(value); setRegister(false); setError('');
+    setUsername(value === 'staff' ? 'aww.vavdi' : '');
+    setPassword(value === 'staff' ? 'Khorak@2026' : '');
   }
-
-  return (
-    <div className="min-h-screen bg-[var(--bg)] px-4 py-8">
-      <div className="mx-auto max-w-4xl">
-        {/* Top Header */}
-        <header className="mb-8 flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[var(--accent)] text-xl font-bold text-white">
-              ખો
-            </div>
-            <div>
-              <h1 className="font-display text-2xl font-bold text-[var(--accent)]">
-                {t('appTitle')}
-              </h1>
-              <p className="text-sm text-[var(--text-secondary)]">{t('appSubtitle')}</p>
-            </div>
-          </div>
-
-          <button
-            type="button"
-            onClick={() => setLang(lang === 'gu' ? 'en' : 'gu')}
-            className="k-btn-secondary min-h-[40px] px-3 py-1.5 text-xs"
-          >
-            {lang === 'gu' ? 'Switch to English' : 'ગુજરાતીમાં જુઓ'}
-          </button>
-        </header>
-
-        <div className="grid gap-6 md:grid-cols-5">
-          {/* Sign-In Card */}
-          <section className="k-card p-6 md:col-span-3">
-            <div className="mb-4 flex items-center gap-2 text-xs font-semibold text-[var(--accent)]">
-              <ShieldCheck className="h-4 w-4" />
-              <span>Seva First Innovation Challenge 2026 • PS000052</span>
-            </div>
-
-            <h2 className="text-xl font-bold text-[var(--text-primary)]">{t('signIn')}</h2>
-            <p className="mt-1 text-sm text-[var(--text-secondary)]">
-              {lang === 'gu'
-                ? 'તમારી ભૂમિકા અનુસાર સુરક્ષિત પ્રવેશ કરો.'
-                : 'Sign in with your role credentials for scoped supply-chain access.'}
-            </p>
-
-            {!isOnline && (
-              <div
-                role="status"
-                className="mt-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-xs font-medium text-amber-900"
-              >
-                {lang === 'gu'
-                  ? 'ઉપકરણ ઓફલાઇન છે. પ્રથમ વખત લૉગિન કરવા માટે ઇન્ટરનેટ જરૂરી છે; અગાઉ લૉગિન કરેલ વપરાશકર્તા ઓફલાઇન ચાલુ રાખી શકે છે.'
-                  : 'Device appears offline. First-time sign-in requires an internet connection to authenticate your account.'}
-              </div>
-            )}
-
-            {error && (
-              <div
-                role="alert"
-                className="mt-4 rounded-xl border border-red-200 bg-[var(--danger-subtle)] px-4 py-3 text-sm font-medium text-[var(--danger)]"
-              >
-                {error}
-              </div>
-            )}
-
-            <form onSubmit={handleSubmit} className="mt-5 space-y-4">
-              <div>
-                <label htmlFor="login-username" className="mb-1.5 block text-sm font-semibold">
-                  {t('username')}
-                </label>
-                <input
-                  id="login-username"
-                  name="username"
-                  type="text"
-                  autoComplete="username"
-                  autoCorrect="off"
-                  autoCapitalize="none"
-                  spellCheck={false}
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                  className="k-input"
-                  required
-                />
-              </div>
-
-              <div>
-                <label htmlFor="login-password" className="mb-1.5 block text-sm font-semibold">
-                  {t('password')}
-                </label>
-                <div className="relative">
-                  <input
-                    id="login-password"
-                    name="password"
-                    type={showPassword ? 'text' : 'password'}
-                    autoComplete="current-password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    className="k-input pr-12"
-                    required
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword((s) => !s)}
-                    aria-pressed={showPassword}
-                    aria-label={showPassword ? 'Hide password' : 'Show password'}
-                    className="absolute right-2 top-1.5 flex h-9 w-9 items-center justify-center rounded-lg text-[var(--text-secondary)] hover:bg-[var(--bg-sunken)]"
-                  >
-                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                  </button>
-                </div>
-              </div>
-
-              <button type="submit" disabled={submitting} className="k-btn-primary w-full">
-                <Lock className="h-4 w-4" />
-                {submitting ? t('loading') : t('signIn')}
-              </button>
-            </form>
-          </section>
-
-          {/* Synthetic Panchmahal Demo Accounts */}
-          <aside className="k-card p-5 md:col-span-2">
-            <h3 className="text-sm font-bold text-[var(--text-primary)]">{t('demoAccounts')}</h3>
-            <p className="mt-1 text-xs text-[var(--text-muted)]">
-              Click any role to populate credentials (password:{' '}
-              <code className="font-mono-num font-semibold text-[var(--text-primary)]">
-                Khorak@2026
-              </code>
-              ).
-            </p>
-
-            <div className="mt-3 space-y-2">
-              {DEMO_ACCOUNTS.map((acc) => (
-                <button
-                  key={acc.username}
-                  type="button"
-                  onClick={() => {
-                    setUsername(acc.username);
-                    setPassword('Khorak@2026');
-                    setError(null);
-                  }}
-                  className={`flex w-full items-center justify-between rounded-xl border px-3 py-2.5 text-left text-xs transition ${
-                    username === acc.username
-                      ? 'border-[var(--accent)] bg-[var(--accent-subtle)] font-bold text-[var(--accent)]'
-                      : 'border-[var(--border)] bg-[var(--bg-sunken)]/50 hover:bg-[var(--bg-sunken)]'
-                  }`}
-                >
-                  <span>{acc.label}</span>
-                  <span className="font-mono-num text-[11px] opacity-75">{acc.username}</span>
-                </button>
-              ))}
-            </div>
-          </aside>
+  async function submit(event: React.FormEvent) {
+    event.preventDefault(); setBusy(true); setError('');
+    try {
+      if (register) await apiRequest('/api/auth/guardian-register', { method: 'POST', skipAuth: true, body: JSON.stringify({ name, username, password }) });
+      await login(username, password, portal);
+    } catch (err) { setError(err instanceof Error ? err.message : 'Unable to sign in'); }
+    finally { setBusy(false); }
+  }
+  return <div className="welcome-page">
+    <header className="welcome-header"><a href="/" className="brand-lockup"><span className="brand-symbol"><Wheat size={24} /></span><span><strong>KHORAK <span className="font-normal">ખોરાક</span></strong><small>{gu ? 'પોષણ માટે જોડાયેલા' : 'Connected for better nutrition'}</small></span></a><button type="button" className="k-btn-secondary" onClick={() => setLang(gu ? 'en' : 'gu')}>{gu ? 'English' : 'ગુજરાતી'}</button></header>
+    <main className="welcome-grid">
+      <section className="welcome-story"><div className="welcome-kicker"><span />{gu ? 'આંગણવાડી પોષણ સહાય' : 'ANGANWADI NUTRITION NETWORK'}</div><h1>{gu ? 'દરેક પરિવાર સુધી.' : 'Good nutrition.'}<br /><em>{gu ? 'કાળજી સાથે.' : 'Closer to home.'}</em></h1><p>{gu ? 'પરિવારો, આંગણવાડી કેન્દ્રો અને અધિકારીઓને એક જ વિશ્વસનીય વ્યવસ્થામાં જોડીએ.' : 'Connecting families, Anganwadi centres and programme teams in one dependable place.'}</p>
+        <div className="care-illustration" aria-hidden="true"><div className="care-orbit orbit-one" /><div className="care-orbit orbit-two" /><div className="care-centre"><HeartHandshake size={62} strokeWidth={1.25} /><span>Care that reaches everyone</span></div><span className="care-label label-family"><Users size={18} />Families</span><span className="care-label label-centre"><Wheat size={18} />Anganwadi</span><span className="care-label label-support"><Leaf size={18} />Nutrition</span></div>
+        <div className="welcome-promise"><ShieldCheck size={20} /><div><strong>{gu ? 'યોગ્ય માહિતી. યોગ્ય લોકો.' : 'The right information. The right people.'}</strong><p>{gu ? 'ભૂમિકા પ્રમાણે સુરક્ષિત પ્રવેશ.' : 'Private family requests and role-based staff access.'}</p></div></div>
+      </section>
+      <section className="welcome-form-panel"><div className="portal-switch" role="tablist" aria-label="Login portal"><button role="tab" aria-selected={portal === 'staff'} onClick={() => choosePortal('staff')}><ShieldCheck size={18} />{gu ? 'કર્મચારી લૉગિન' : 'Staff login'}</button><button role="tab" aria-selected={portal === 'guardian'} onClick={() => choosePortal('guardian')}><Users size={18} />{gu ? 'વાલી લૉગિન' : 'Guardian login'}</button></div>
+        <div className="px-1"><p className="form-eyebrow">{portal === 'staff' ? 'PROGRAMME WORKSPACE' : 'FAMILY SUPPORT'}</p><h2 className="mt-2 text-3xl font-bold">{register ? (gu ? 'તમારું ખાતું બનાવો' : 'Let’s get you started') : (gu ? 'ફરી સ્વાગત છે' : 'Welcome back')}</h2><p className="mt-3 text-base text-[var(--text-secondary)]">{portal === 'staff' ? (gu ? 'તમારા કેન્દ્ર અને કાર્યક્રમનું સંચાલન કરવા પ્રવેશ કરો.' : 'Sign in to manage your centre and keep nutrition services moving.') : (gu ? 'નજીકના કેન્દ્રમાં મદદ માગો અને અરજીની સ્થિતિ જુઓ.' : 'Request support from your Anganwadi centre and follow every step.')}</p>
+          {!isOnline && <p className="form-notice mt-4">{gu ? 'સર્વર સાથે જોડાણ ઉપલબ્ધ નથી.' : 'The server is currently unreachable. Check your connection.'}</p>}
+          {error && <p role="alert" className="mt-4 rounded-xl bg-red-50 p-3 text-sm text-red-800">{error}</p>}
+          <form onSubmit={submit} className="mt-7 space-y-5">
+            {register && <label className="block text-sm font-semibold">{gu ? 'તમારું નામ' : 'Your full name'}<input className="k-input mt-2" value={name} onChange={e => setName(e.target.value)} autoComplete="name" minLength={2} maxLength={100} required /></label>}
+            <label className="block text-sm font-semibold">{gu ? 'વપરાશકર્તા નામ' : 'Username'}<input className="k-input mt-2" value={username} onChange={e => setUsername(e.target.value)} autoCapitalize="none" autoCorrect="off" autoComplete="username" spellCheck={false} pattern={register ? '[a-z0-9][a-z0-9._-]{3,39}' : undefined} title={register ? '4–40 lowercase letters, numbers, dots, hyphens or underscores' : undefined} required /></label>
+            <label className="block text-sm font-semibold">{gu ? 'પાસવર્ડ' : 'Password'}<span className="relative mt-2 block"><input className="k-input pr-12" type={visible ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)} autoComplete={register ? 'new-password' : 'current-password'} minLength={register ? 10 : 4} maxLength={72} required /><button className="password-toggle" type="button" aria-label={visible ? 'Hide password' : 'Show password'} onClick={() => setVisible(!visible)}>{visible ? <EyeOff size={20} /> : <Eye size={20} />}</button></span>{register && <span className="mt-2 block text-sm font-normal text-[var(--text-muted)]">{gu ? 'ઓછામાં ઓછા 10 અક્ષર.' : 'Use at least 10 characters. Keep your password private.'}</span>}</label>
+            <button className="k-btn-primary w-full" disabled={busy}>{busy ? (gu ? 'કૃપા કરીને રાહ જુઓ…' : 'Please wait…') : register ? (gu ? 'ખાતું બનાવો' : 'Create guardian account') : (gu ? 'પ્રવેશ કરો' : `Sign in as ${portal === 'staff' ? 'staff' : 'guardian'}`)}</button>
+          </form>
+          {portal === 'guardian' && <p className="mt-5 text-center text-sm text-[var(--text-secondary)]">{register ? 'Already registered?' : 'New to KHORAK?'} <button className="font-bold text-[var(--accent)] underline underline-offset-4" onClick={() => { setRegister(!register); setError(''); }}>{register ? 'Sign in' : 'Create an account'}</button></p>}
+          <p className="mt-6 flex items-center justify-center gap-2 text-sm text-[var(--text-muted)]"><LockKeyhole size={14} />{portal === 'guardian' ? 'Only you and authorised centre staff see your requests.' : 'Access is limited to your assigned service area.'}</p>
         </div>
-      </div>
-    </div>
-  );
+      </section>
+    </main>
+    {portal === 'staff' && <section className="demo-section"><div className="flex flex-wrap items-end justify-between gap-2"><div><p className="form-eyebrow">EXPLORE THE DEMO</p><h2 className="mt-1 text-xl font-bold">A workspace for every responsibility</h2></div><p className="text-sm text-[var(--text-secondary)]">Synthetic data · Demo password: <code>Khorak@2026</code></p></div><div className="demo-grid">{accounts.map(([role, label, account]) => <button key={role} onClick={() => { setUsername(account); setPassword('Khorak@2026'); setError(''); document.querySelector('form')?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }}><span className="flex items-center justify-between"><strong>{role}</strong><ArrowUpRight size={16} /></span><small>{label}</small><span className="demo-username">{account}</span></button>)}</div></section>}
+    <footer className="welcome-footer"><span>KHORAK · Panchmahal, Gujarat</span><span>Seva First Innovation Challenge 2026 · Synthetic demonstration</span></footer>
+  </div>;
 }
-

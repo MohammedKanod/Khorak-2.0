@@ -1,3 +1,11 @@
+import { FamilyRequestInbox } from '../guardian/FamilyRequestInbox';
+import { MonthlyReport } from './MonthlyReport';
+import { downloadCsv } from '../../lib/exportCsv';
+import { officerRoles, OfficerRole } from './roleConfig';
+import { HierarchyView } from './HierarchyView';
+import { GovernancePanel, OperationalNote, SupplierProfile } from './GovernancePanel';
+import { useLiveRefresh } from '../../hooks/useLiveRefresh';
+import { LiveSyncStatus } from '../../components/LiveSyncStatus';
 import React, { useEffect, useState } from 'react';
 import {
   AlertTriangle,
@@ -53,6 +61,10 @@ import {
 } from '../../components/ui';
 
 type AdminTab =
+  | 'families'
+  | 'hierarchy'
+  | 'notes'
+  | 'supply'
   | 'overview'
   | 'centres'
   | 'inventory'
@@ -95,6 +107,7 @@ interface BlockMetricsResponse {
     centreName: string;
     centreNameGu: string | null;
     code: string;
+    sectorId: string;
     sectorName: string;
     blockId: string;
     blockName: string;
@@ -119,7 +132,12 @@ interface BlockMetricsResponse {
 export function AdminPortal() {
   const { user, logout } = useAuth();
   const { lang, setLang, t } = useI18n();
-  const role = user!.role;
+  const role = user!.role as OfficerRole;
+  const roleInfo = officerRoles[role];
+  const canManage = !roleInfo.readOnly;
+  const [notes, setNotes] = useState<OperationalNote[]>([]);
+  const [supplierProfiles, setSupplierProfiles] = useState<SupplierProfile[]>([]);
+  const [reqSupplierId, setReqSupplierId] = useState('');
   const isDistrictLevel = role === 'DPO' || role === 'DDO';
 
   const [tab, setTab] = useState<AdminTab>('overview');
@@ -180,8 +198,8 @@ export function AdminPortal() {
   } | null>(null);
   const [approvalRemarks, setApprovalRemarks] = useState('');
 
-  async function loadDashboard() {
-    setLoading(true);
+  async function fetchPortalData(background: boolean) {
+    if (!background) setLoading(true);
     try {
       const res = await apiRequest<{
         success: boolean;
@@ -200,6 +218,12 @@ export function AdminPortal() {
         };
       }>('/api/dashboard/admin-bundle');
 
+      const [noteResponse, supplierResponse] = await Promise.all([
+        apiRequest<{ data: OperationalNote[] }>('/api/governance/notes'),
+        apiRequest<{ data: SupplierProfile[] }>('/api/governance/suppliers'),
+      ]);
+      setNotes(noteResponse.data);
+      setSupplierProfiles(supplierResponse.data);
       const bundle = res.data;
       setMetrics(bundle.metrics);
       setDiscrepancies(bundle.discrepancies);
@@ -223,18 +247,18 @@ export function AdminPortal() {
         }
       }
     } catch (err) {
-      setBanner({
+      if (!background) setBanner({
         type: 'error',
         text: err instanceof Error ? err.message : 'Unable to load administrative dashboard',
       });
+      throw err;
     } finally {
       setLoading(false);
     }
   }
 
-  useEffect(() => {
-    loadDashboard();
-  }, [role]);
+  const liveSync = useLiveRefresh(fetchPortalData);
+  const loadDashboard = () => liveSync.refresh();
 
   const [appeals, setAppeals] = useState<DispatchAppeal[]>([]);
   const [stockRequests, setStockRequests] = useState<StockRequest[]>([]);
@@ -301,6 +325,7 @@ export function AdminPortal() {
         method: 'POST',
         body: JSON.stringify({
           decision: reqDecision,
+          assignedSupplierId: reqDecision !== 'REJECT' ? reqSupplierId : undefined,
           ...(reqDecision !== 'REJECT' && reqApprovedQty ? { approvedQuantity: Number(reqApprovedQty) } : {}),
           remarks: reqReviewRemarks,
         }),
@@ -423,76 +448,30 @@ export function AdminPortal() {
 
   function exportCsvReport() {
     if (!metrics) return;
-    const headers = ['Centre Code', 'Centre Name', 'Sector', 'Block', 'Usable Stock', 'Expiring Soon Batches', 'Has Stockout'];
-    const rows = metrics.centres.map((c) => [
-      c.code,
-      `"${c.centreName}"`,
-      `"${c.sectorName}"`,
-      `"${c.blockName}"`,
-      c.usableStock,
-      c.expiringSoonBatches,
-      c.hasStockout ? 'YES' : 'NO',
+    downloadCsv(`khorak-inventory-${new Date().toISOString().slice(0, 10)}.csv`, [
+      ['Centre Code', 'Centre', 'Sector', 'Block', 'Product', 'Unit', 'Usable stock', 'Days of cover', 'Reorder status', 'Expiring batches'],
+      ...metrics.centres.flatMap(c => c.products.map(p => [c.code, c.centreName, c.sectorName, c.blockName, p.productName, p.unit, p.usableStock, p.daysOfStock, p.reorderLevel, p.expiringSoonBatches])),
     ]);
-    const csv = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `khorak-panchmahal-inventory-${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
   }
 
-  const navConfig: Array<{ id: AdminTab; label: string; icon: React.ComponentType<{ className?: string }> }> =
-    role === 'SUPERVISOR'
-      ? [
-          { id: 'overview', label: t('navDashboard'), icon: LayoutDashboard },
-          { id: 'centres', label: 'Centres', icon: Building2 },
-          { id: 'inventory', label: t('navInventory'), icon: Package },
-          { id: 'stockRequests', label: 'Stock Requests', icon: PackagePlus },
-          { id: 'beneficiaries', label: 'Beneficiary Approvals', icon: UserCheck },
-          { id: 'discrepancies', label: t('navDiscrepancies'), icon: FileWarning },
-          { id: 'reconciliation', label: t('navReconciliation'), icon: ClipboardCheck },
-          { id: 'expiry', label: t('navExpiry'), icon: Clock },
-        ]
-      : role === 'CDPO'
-        ? [
-            { id: 'overview', label: t('navDashboard'), icon: LayoutDashboard },
-            { id: 'centres', label: 'Centres', icon: Building2 },
-            { id: 'stockRequests', label: 'Stock Requests', icon: PackagePlus },
-            { id: 'beneficiaries', label: 'Beneficiaries', icon: UserCheck },
-            { id: 'alerts', label: t('navAlerts'), icon: AlertTriangle },
-            { id: 'suppliers', label: 'Suppliers', icon: Truck },
-            { id: 'deliveries', label: 'Deliveries', icon: Package },
-            { id: 'discrepancies', label: t('navDiscrepancies'), icon: FileWarning },
-            { id: 'reports', label: t('navReports'), icon: Download },
-          ]
-        : role === 'TDO'
-          ? [
-              { id: 'overview', label: t('navDashboard'), icon: LayoutDashboard },
-              { id: 'centres', label: 'Block Inventory', icon: Building2 },
-              { id: 'reports', label: 'Distribution Performance', icon: BarChart3 },
-            ]
-          : role === 'DPO'
-            ? [
-                { id: 'overview', label: t('navDashboard'), icon: LayoutDashboard },
-                { id: 'centres', label: 'Block Comparison', icon: Building2 },
-                { id: 'inventory', label: t('navInventory'), icon: Package },
-                { id: 'stockRequests', label: 'Stock Requests', icon: PackagePlus },
-                { id: 'alerts', label: 'Stockout Reports', icon: AlertTriangle },
-                { id: 'expiry', label: 'Expiry Reports', icon: Clock },
-                { id: 'reports', label: t('navReports'), icon: Download },
-              ]
-            : [
-                // DDO Executive
-                { id: 'overview', label: 'District Overview', icon: LayoutDashboard },
-                { id: 'centres', label: 'Block Performance', icon: Building2 },
-                { id: 'inventory', label: 'Inventory Trends', icon: Package },
-                { id: 'stockRequests', label: 'Stock Requests', icon: PackagePlus },
-                { id: 'malnutrition', label: 'Malnutrition Trends', icon: TrendingUp },
-                { id: 'discrepancies', label: t('navDiscrepancies'), icon: FileWarning },
-                { id: 'reports', label: t('navReports'), icon: Download },
-              ];
+  const navConfig: Array<{ id: AdminTab; label: string; icon: React.ComponentType<{ className?: string }> }> = [
+    { id: 'overview', label: roleInfo.heading, icon: LayoutDashboard },
+    { id: 'hierarchy', label: 'Hierarchy & access', icon: Building2 },
+    { id: 'centres', label: isDistrictLevel ? 'Blocks & centres' : 'Sector & centre status', icon: Building2 },
+    { id: 'inventory', label: 'Stock availability', icon: Package },
+    { id: 'stockRequests', label: role === 'CDPO' ? 'Requests & approvals' : 'Stock requests', icon: PackagePlus },
+    ...(role === 'CDPO' ? [{ id: 'supply' as AdminTab, label: 'Orders & supplier records', icon: Truck }] : []),
+    { id: 'notes', label: role === 'SUPERVISOR' ? 'Inspections & flags' : isDistrictLevel ? 'Programme escalations' : 'Observations & flags', icon: FileWarning },
+    ...(canManage ? [{ id: 'families' as AdminTab, label: 'Family requests', icon: UserCheck }] : []),
+    ...(canManage ? [{ id: 'beneficiaries' as AdminTab, label: 'Beneficiary approvals', icon: UserCheck }, { id: 'reconciliation' as AdminTab, label: 'Verification & corrections', icon: ClipboardCheck }] : []),
+    { id: 'discrepancies', label: 'Delivery exceptions', icon: FileWarning },
+    { id: 'alerts', label: 'Supply alerts', icon: AlertTriangle },
+    { id: 'deliveries', label: 'Deliveries', icon: Truck },
+    { id: 'suppliers', label: 'Supplier performance', icon: TrendingUp },
+    { id: 'expiry', label: 'Expiry monitoring', icon: Clock },
+    ...(isDistrictLevel ? [{ id: 'malnutrition' as AdminTab, label: 'Nutrition trends', icon: TrendingUp }] : []),
+    { id: 'reports', label: 'Reports & exports', icon: Download },
+  ];
 
   const filteredCentres = (metrics?.centres || []).filter((c) => {
     const matchesBlock = blockFilter === 'ALL' || c.blockId === blockFilter;
@@ -551,14 +530,14 @@ export function AdminPortal() {
   })();
 
   return (
-    <div className="min-h-screen bg-[var(--bg)] md:flex">
+    <div className="officer-shell min-h-screen bg-[var(--bg)] md:flex">
       {/* Sidebar */}
-      <aside className="border-b border-[var(--border)] bg-[var(--accent)] text-white md:flex md:w-64 md:shrink-0 md:flex-col md:border-b-0 md:border-r">
+      <aside className="officer-sidebar border-b border-[var(--border)] bg-[var(--accent)] text-white md:flex md:w-64 md:shrink-0 md:flex-col md:border-b-0 md:border-r">
         <div className="flex items-center justify-between px-5 py-4">
           <div>
             <div className="font-display text-lg font-bold">{t('appTitle')}</div>
             <p className="text-xs text-emerald-100">
-              {role} • {user?.block?.name || user?.sector?.name || user?.district?.name || 'Panchmahal'}
+              {roleInfo.level} · {role} • {user?.block?.name || user?.sector?.name || user?.district?.name || 'Panchmahal'}
             </p>
           </div>
           <button
@@ -578,6 +557,7 @@ export function AdminPortal() {
               <button
                 key={item.id}
                 type="button"
+                aria-current={active ? 'page' : undefined}
                 onClick={() => setTab(item.id)}
                 className={`flex shrink-0 items-center gap-2.5 rounded-xl px-3.5 py-2.5 text-sm font-semibold transition ${
                   active ? 'bg-white text-[var(--accent)]' : 'text-emerald-100 hover:bg-white/10'
@@ -604,14 +584,14 @@ export function AdminPortal() {
       </aside>
 
       {/* Main */}
-      <main className="flex-1 p-4 md:p-8">
+      <main className="min-w-0 flex-1 p-4 md:p-8">
         <div className="mx-auto max-w-6xl space-y-6">
           <header className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <span className="rounded-full bg-[var(--saffron-subtle)] px-2.5 py-0.5 text-xs font-bold text-[var(--warning)]">
                 {t('syntheticBanner')}
               </span>
-              <h1 className="mt-1 text-2xl font-bold text-[var(--text-primary)]">
+              <h1 className="mt-3 text-2xl font-bold text-[var(--text-primary)]">
                 {navConfig.find((n) => n.id === tab)?.label}
               </h1>
             </div>
@@ -632,6 +612,8 @@ export function AdminPortal() {
             </div>
           </header>
 
+          <LiveSyncStatus {...liveSync} />
+
           {banner && (
             <div
               role="status"
@@ -649,12 +631,28 @@ export function AdminPortal() {
             <LoadingSkeleton rows={5} />
           ) : (
             <>
+              {tab === 'families' && <FamilyRequestInbox />}
+              {tab === 'hierarchy' && <HierarchyView centres={metrics.centres} role={role} onOpenCentre={centre => { setSearchQuery(centre.code); setBlockFilter(centre.blockId); setTab('centres'); }} />}
+              {(tab === 'notes' || tab === 'supply') && <GovernancePanel key={tab} mode={tab} role={role} centres={metrics.centres} notes={notes} suppliers={supplierProfiles} reload={loadDashboard} />}
               {/* OVERVIEW */}
               {tab === 'overview' && (
                 <div className="space-y-6">
+                  <section className="role-hero">
+                    <div className="flex flex-wrap items-center justify-between gap-3"><span className="role-eyebrow">{roleInfo.level} · {user?.district?.name || user?.block?.name || user?.sector?.name}</span><span className="role-access">{roleInfo.readOnly ? 'View & export access' : 'Operational access'}</span></div>
+                    <h2>{roleInfo.title}</h2><p>{roleInfo.purpose}</p>
+                    <div className="mt-6 flex flex-wrap gap-3"><button className="hero-button" onClick={() => setTab(role === 'CDPO' ? 'supply' : role === 'SUPERVISOR' ? 'reconciliation' : 'centres')}>{role === 'CDPO' ? 'Issue a stock order' : role === 'SUPERVISOR' ? 'Verify centre stock' : 'Explore area performance'}</button><button className="hero-button-secondary" onClick={() => setTab('hierarchy')}>View hierarchy & responsibilities</button></div>
+                  </section>
+                  <section className="grid gap-3 sm:grid-cols-3" aria-label="Priority work">
+                    <button className="priority-card" onClick={() => setTab('alerts')}><span className="priority-icon"><AlertTriangle size={20} /></span><strong>{metrics.kpis.stockoutCentres}</strong><span>Centres with stockouts</span><small>Review supply risks</small></button>
+                    <button className="priority-card" onClick={() => setTab(role === 'CDPO' || role === 'SUPERVISOR' ? 'stockRequests' : 'discrepancies')}><span className="priority-icon"><ClipboardCheck size={20} /></span><strong>{canManage ? stockRequests.filter(r => ['SUBMITTED', 'PENDING_APPROVAL'].includes(r.status)).length : metrics.kpis.unresolvedDiscrepancies}</strong><span>{canManage ? 'Requests awaiting CDPO' : 'Unresolved delivery exceptions'}</span><small>{role === 'CDPO' ? 'Review & assign suppliers' : 'Inspect current status'}</small></button>
+                    <button className="priority-card" onClick={() => setTab('notes')}><span className="priority-icon"><FileWarning size={20} /></span><strong>{notes.filter(n => n.kind === 'ANOMALY' || n.kind === 'SHORTAGE').length}</strong><span>Recorded programme flags</span><small>{canManage ? 'Record or review observations' : 'Review officer observations'}</small></button>
+                  </section>
+                  <section className="k-card p-5"><div className="flex items-center justify-between gap-3"><div><h2 className="font-bold">{isDistrictLevel ? 'Block performance at a glance' : 'Sector performance at a glance'}</h2><p className="mt-1 text-sm text-[var(--text-secondary)]">Availability across your assigned area. Select a row to inspect centres.</p></div><span className="scope-chip">{metrics.kpis.totalCentres} centres</span></div>
+                    <div className="mt-4 space-y-2">{(isDistrictLevel ? metrics.blocks.map(b => ({ id: b.blockId, name: b.blockName, total: b.centresCount, stockouts: b.stockoutCentres, query: '' })) : [...new Map(metrics.centres.map(c => [c.sectorId, c.sectorName])).entries()].map(([id, name]) => { const members = metrics.centres.filter(c => c.sectorId === id); return { id, name, total: members.length, stockouts: members.filter(c => c.hasStockout).length, query: name }; })).map(area => <button key={area.id} className="area-row" onClick={() => { setBlockFilter(isDistrictLevel ? area.id : 'ALL'); setSearchQuery(area.query); setTab('centres'); }}><span className="font-semibold">{area.name}</span><span className="text-sm text-[var(--text-secondary)]">{area.total} centres</span><span className="availability-bar"><span style={{ width: `${area.total ? (area.total - area.stockouts) / area.total * 100 : 0}%` }} /></span><span className={`text-sm ${area.stockouts ? 'text-red-700' : 'text-emerald-700'}`}>{area.stockouts} stockouts</span></button>)}</div>
+                  </section>
                   <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
                     <KpiCard label="Registered Centres" value={metrics.kpis.totalCentres} tone="green" />
-                    <KpiCard label="Total Usable Stock" value={metrics.kpis.totalUsableStock} />
+                    <KpiCard label="Sectors in Scope" value={new Set(metrics.centres.map(c => c.sectorId)).size} />
                     <KpiCard
                       label="Below 7 Days Stock"
                       value={metrics.kpis.centresBelowSevenDays}
@@ -689,7 +687,7 @@ export function AdminPortal() {
                   {/* Block Comparison Chart */}
                   <div className="grid gap-6 lg:grid-cols-2">
                     <div className="k-card p-5">
-                      <h2 className="mb-3 text-base font-bold">Block-wise Usable Stock & Distribution</h2>
+                      <h2 className="mb-1 text-base font-bold">Block stock coverage</h2><p className="mb-3 text-sm text-[var(--text-secondary)]">Centre counts, grouped by stock availability.</p>
                       <div className="h-72">
                         <ResponsiveContainer width="100%" height="100%">
                           <BarChart data={metrics.blocks}>
@@ -698,8 +696,8 @@ export function AdminPortal() {
                             <YAxis tick={{ fontSize: 12 }} />
                             <Tooltip />
                             <Legend />
-                            <Bar dataKey="usableStock" name="Usable Stock" fill="#1B4332" radius={[6, 6, 0, 0]} />
-                            <Bar dataKey="distributedQty" name="Distributed/Used" fill="#D97706" radius={[6, 6, 0, 0]} />
+                            <Bar dataKey="centresCount" name="Total centres" fill="#1B4332" radius={[6, 6, 0, 0]} />
+                            <Bar dataKey="stockoutCentres" name="Centres with stockouts" fill="#D97706" radius={[6, 6, 0, 0]} />
                           </BarChart>
                         </ResponsiveContainer>
                       </div>
@@ -934,7 +932,7 @@ export function AdminPortal() {
                                 </p>
                               )}
                             </div>
-                            {isPending && (role === 'SUPERVISOR' || role === 'CDPO' || role === 'DPO' || role === 'DDO') && (
+                            {isPending && role === 'CDPO' && (
                               <button
                                 type="button"
                                 onClick={() => {
@@ -1017,7 +1015,7 @@ export function AdminPortal() {
                                   <Send className="h-3.5 w-3.5" /> Raise Appeal
                                 </button>
                               )}
-                              {(role === 'SUPERVISOR' || role === 'CDPO' || role === 'DPO' || role === 'DDO') && (
+                              {(canManage) && (
                                 <button
                                   type="button"
                                   onClick={() => {
@@ -1096,7 +1094,7 @@ export function AdminPortal() {
                                 </p>
                               )}
                             </div>
-                            {(role === 'SUPERVISOR' || role === 'CDPO' || role === 'DPO' || role === 'DDO') && (
+                            {(canManage) && (
                               <button
                                 type="button"
                                 onClick={() => {
@@ -1154,7 +1152,7 @@ export function AdminPortal() {
                             >
                               {r.status}
                             </StatusBadge>
-                            {r.status === 'PENDING_APPROVAL' && (
+                            {canManage && r.status === 'PENDING_APPROVAL' && (
                               <>
                                 <button
                                   type="button"
@@ -1223,7 +1221,7 @@ export function AdminPortal() {
                               >
                                 {s.status}
                               </StatusBadge>
-                              {s.status === 'PENDING' && (
+                              {canManage && s.status === 'PENDING' && (
                                 <>
                                   <button
                                     type="button"
@@ -1332,7 +1330,7 @@ export function AdminPortal() {
                             )}
                           </div>
 
-                          {b.status === 'PENDING_APPROVAL' && (
+                          {canManage && b.status === 'PENDING_APPROVAL' && (
                             <div className="flex items-center gap-2">
                               <button
                                 type="button"
@@ -1559,6 +1557,7 @@ export function AdminPortal() {
                     <Download className="h-4 w-4" />
                     Download Inventory & Stockout CSV
                   </button>
+                  <MonthlyReport />
                 </div>
               )}
             </>
@@ -1951,8 +1950,9 @@ export function AdminPortal() {
               />
             </div>
           )}
+          {reqDecision !== 'REJECT' && <label className="block text-sm font-semibold">Assigned supplier<select required className="k-select mt-1" value={reqSupplierId} onChange={e => setReqSupplierId(e.target.value)}><option value="">Choose block supplier</option>{supplierProfiles.filter(s => s.isActive).map(s => <option key={s.id} value={s.supplierId}>{s.supplier.name}</option>)}</select></label>}
           <div>
-            <label className="mb-1 block text-xs font-semibold">Supervisor Remarks</label>
+            <label className="mb-1 block text-xs font-semibold">CDPO Remarks</label>
             <textarea
               rows={3}
               value={reqReviewRemarks}

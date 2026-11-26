@@ -101,8 +101,7 @@ inventoryRouter.get('/', async (req, res, next) => {
     const scopeWhere = buildCentreScopeWhere(req.user!);
     const centres = await prisma.anganwadiCentre.findMany({
       where: {
-        ...scopeWhere,
-        ...(requestedCentreId ? { id: requestedCentreId } : {}),
+        AND: [scopeWhere, ...(requestedCentreId ? [{ id: requestedCentreId }] : [])],
       },
       include: {
         sector: {
@@ -155,7 +154,7 @@ inventoryRouter.get('/:centreId', async (req, res, next) => {
     res.json({
       success: true,
       data: {
-        centre,
+        centre: req.user!.role === Role.AWH ? { id: centre.id, name: centre.name, nameGu: centre.nameGu, code: centre.code } : centre,
         products: category ? summary.filter((p) => p.category === category) : summary,
       },
     });

@@ -39,6 +39,9 @@ async function seed() {
   console.log('Seeding KHORAK Panchmahal synthetic demonstration data...');
 
   // Clear existing data in reverse dependency order for clean idempotent re-seeding
+  await prisma.guardianRequest.deleteMany();
+  await prisma.operationalNote.deleteMany();
+  await prisma.blockSupplier.deleteMany();
   await prisma.alert.deleteMany();
   await prisma.approval.deleteMany();
   await prisma.auditLog.deleteMany();
@@ -903,6 +906,11 @@ async function seed() {
   // 15. Generate initial alerts for all centres
   await refreshAllActiveCentreAlerts();
 
+  const supplierBlocks = await prisma.dispatch.findMany({ select: { supplierId: true, supplier: { select: { contactInformation: true } }, destinationCentre: { select: { sector: { select: { blockId: true } } } } } });
+  for (const dispatch of supplierBlocks) {
+    const blockId = dispatch.destinationCentre.sector.blockId;
+    await prisma.blockSupplier.upsert({ where: { blockId_supplierId: { blockId, supplierId: dispatch.supplierId } }, create: { blockId, supplierId: dispatch.supplierId, contactInformation: dispatch.supplier.contactInformation }, update: {} });
+  }
   console.log('Seed completed successfully!');
 }
 

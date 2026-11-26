@@ -27,6 +27,7 @@ const MAX_AUTHORISED_REQUEST_QTY = 5000;
 
 const createStockRequestSchema = z.object({
   centreId: z.string().uuid().optional(),
+  assignedSupplierId: z.string().uuid().optional(),
   productId: z.string().uuid(),
   requestedQuantity: z.coerce.number().positive().max(MAX_AUTHORISED_REQUEST_QTY),
   reason: z.enum(['LOW_STOCK', 'EXPECTED_DEMAND', 'DAMAGED_STOCK', 'OTHER']),
@@ -35,6 +36,8 @@ const createStockRequestSchema = z.object({
 });
 
 export async function executeCreateStockRequest(params: {
+  assignedSupplierId?: string;
+  issueOrder?: boolean;
   userId: string;
   centreId: string;
   productId: string;
@@ -76,15 +79,19 @@ export async function executeCreateStockRequest(params: {
         requestedQuantity: roundQty(params.requestedQuantity),
         reason: params.reason,
         remarks: params.remarks || null,
-        status: StockRequestStatus.PENDING_APPROVAL,
+        status: params.issueOrder ? StockRequestStatus.APPROVED : StockRequestStatus.PENDING_APPROVAL,
+        assignedSupplierId: params.assignedSupplierId,
+        approvedQuantity: params.issueOrder ? roundQty(params.requestedQuantity) : null,
+        reviewedBy: params.issueOrder ? params.userId : null,
+        reviewedAt: params.issueOrder ? new Date() : null,
         requestedBy: params.userId,
         idempotencyKey: params.idempotencyKey,
         history: {
           create: {
             actorId: params.userId,
             fromStatus: null,
-            toStatus: StockRequestStatus.PENDING_APPROVAL,
-            action: 'SUBMITTED',
+            toStatus: params.issueOrder ? StockRequestStatus.APPROVED : StockRequestStatus.PENDING_APPROVAL,
+            action: params.issueOrder ? 'ORDER_ISSUED_BY_CDPO' : 'SUBMITTED',
             remarks: params.remarks || `Requested ${params.requestedQuantity} ${product.unit} (${params.reason})`,
           },
         },
@@ -122,7 +129,7 @@ export async function executeCreateStockRequest(params: {
 
 stockRequestsRouter.post(
   '/',
-  requireRoles(Role.AWW, Role.AWH, Role.SUPERVISOR),
+  requireRoles(Role.AWW, Role.SUPERVISOR, Role.CDPO),
   async (req, res, next) => {
     try {
       const parsed = createStockRequestSchema.parse(req.body);
@@ -134,7 +141,14 @@ stockRequestsRouter.post(
       await assertCentreInScope(req.user!, centreId);
       const idempotencyKey = parsed.idempotencyKey || `sreq-${crypto.randomUUID()}`;
 
+      const issueOrder = req.user!.role === Role.CDPO;
+      if (issueOrder) {
+        const profile = parsed.assignedSupplierId && await prisma.blockSupplier.findFirst({ where: { supplierId: parsed.assignedSupplierId, blockId: req.user!.blockId ?? '__none__', isActive: true } });
+        if (!profile) throw new AppError(400, 'SUPPLIER_REQUIRED', 'Choose an active block supplier');
+      }
       const result = await executeCreateStockRequest({
+        issueOrder,
+        assignedSupplierId: issueOrder ? parsed.assignedSupplierId : undefined,
         userId: req.user!.id,
         centreId,
         productId: parsed.productId,
@@ -163,6 +177,7 @@ stockRequestsRouter.get('/', async (req, res, next) => {
       where = {
         OR: [
           {
+            assignedSupplierId: req.user!.supplierId ?? '__none__',
             status: {
               in: [
                 StockRequestStatus.APPROVED,
@@ -236,13 +251,12 @@ stockRequestsRouter.get('/:id', async (req, res, next) => {
 
     if (req.user!.role === Role.SUPPLIER) {
       const canView =
-        (
-          [
+        (reqRow.assignedSupplierId === req.user!.supplierId && ([
             StockRequestStatus.APPROVED,
             StockRequestStatus.PARTIALLY_APPROVED,
             StockRequestStatus.AWAITING_DISPATCH,
           ] as StockRequestStatus[]
-        ).includes(reqRow.status) ||
+        ).includes(reqRow.status)) ||
         reqRow.dispatches.some((d) => d.supplierId === req.user!.supplierId);
       if (!canView) {
         throw new AppError(403, 'FORBIDDEN', 'Stock request is not authorised for supplier view');
@@ -251,7 +265,7 @@ stockRequestsRouter.get('/:id', async (req, res, next) => {
       await assertCentreInScope(req.user!, reqRow.centreId);
     }
 
-    const summary = await getCentreInventorySummary(reqRow.centreId);
+    const summary = req.user!.role === Role.SUPPLIER ? [] : await getCentreInventorySummary(reqRow.centreId);
     const productStock = summary.find((p) => p.productId === reqRow.productId) || null;
 
     res.json({ success: true, data: { ...reqRow, currentCentreProductStock: productStock } });
@@ -262,13 +276,14 @@ stockRequestsRouter.get('/:id', async (req, res, next) => {
 
 const reviewStockRequestSchema = z.object({
   decision: z.enum(['APPROVE', 'PARTIAL_APPROVE', 'REJECT']),
+  assignedSupplierId: z.string().uuid().optional(),
   approvedQuantity: z.coerce.number().positive().max(MAX_AUTHORISED_REQUEST_QTY).optional(),
   remarks: z.string().min(3, 'Remarks are mandatory').max(500).trim(),
 });
 
 stockRequestsRouter.post(
   '/:id/review',
-  requireRoles(Role.SUPERVISOR, Role.CDPO, Role.DPO, Role.DDO),
+  requireRoles(Role.CDPO),
   async (req, res, next) => {
     try {
       const parsed = reviewStockRequestSchema.parse(req.body);
@@ -295,6 +310,12 @@ stockRequestsRouter.post(
         );
       }
 
+      if (parsed.decision !== 'REJECT') {
+        const assignment = parsed.assignedSupplierId && await prisma.blockSupplier.findFirst({
+          where: { supplierId: parsed.assignedSupplierId, blockId: req.user!.blockId ?? '__none__', isActive: true },
+        });
+        if (!assignment) throw new AppError(400, 'SUPPLIER_REQUIRED', 'Select an active supplier assigned to your block');
+      }
       let nextStatus: StockRequestStatus;
       let approvedQty: number | null = null;
 
@@ -335,6 +356,7 @@ stockRequestsRouter.post(
           where: { id: existing.id },
           data: {
             status: nextStatus,
+            assignedSupplierId: parsed.decision === 'REJECT' ? null : parsed.assignedSupplierId,
             approvedQuantity: approvedQty,
             reviewedBy: req.user!.id,
             reviewRemarks: parsed.remarks,

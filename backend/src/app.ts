@@ -1,4 +1,6 @@
 import express from 'express';
+import { guardianRouter } from './routes/guardian.routes';
+import { governanceRouter } from './routes/governance.routes';
 import cors from 'cors';
 import helmet from 'helmet';
 import path from 'path';
@@ -82,6 +84,11 @@ export function createApp() {
     }
   });
 
+  app.use('/api', (_req, res, next) => {
+    res.setHeader('Cache-Control', 'private, no-store');
+    next();
+  });
+
   app.use('/api', async (_req, _res, next) => {
     try {
       await ensureProductionSchema();
@@ -92,6 +99,8 @@ export function createApp() {
   });
 
   app.use('/api/auth', authRouter);
+  app.use('/api/governance', governanceRouter);
+  app.use('/api/guardian', guardianRouter);
   app.use('/api/inventory', inventoryRouter);
   app.use('/api/dispatches', dispatchRouter);
   app.use('/api/discrepancies', discrepancyRouter);

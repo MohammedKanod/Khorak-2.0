@@ -35,7 +35,7 @@ dispatchRouter.get(
     try {
       const centreFilter: Prisma.AnganwadiCentreWhereInput =
         req.user!.role === Role.SUPPLIER
-          ? { isActive: true }
+          ? { isActive: true, sector: { block: { supplierProfiles: { some: { supplierId: req.user!.supplierId ?? '__none__', isActive: true } } } } }
           : { ...buildCentreScopeWhere(req.user!), isActive: true };
 
       const [centres, products, suppliers] = await Promise.all([
@@ -47,7 +47,7 @@ dispatchRouter.get(
           orderBy: { name: 'asc' },
         }),
         prisma.product.findMany({ where: { isActive: true }, orderBy: { name: 'asc' } }),
-        prisma.supplier.findMany({ where: { status: 'ACTIVE' }, orderBy: { name: 'asc' } }),
+        prisma.supplier.findMany({ where: { status: 'ACTIVE', ...(req.user!.role === Role.SUPPLIER ? { id: req.user!.supplierId ?? '__none__' } : { blockProfiles: { some: { blockId: req.user!.blockId ?? '__none__' } } }) }, orderBy: { name: 'asc' } }),
       ]);
 
       res.json({ success: true, data: { centres, products, suppliers } });
@@ -125,6 +125,9 @@ dispatchRouter.post(
         throw new AppError(404, 'CENTRE_NOT_FOUND', 'Destination Anganwadi Centre not found');
       }
 
+      if (req.user!.role !== Role.SUPPLIER) await assertCentreInScope(req.user!, centre.id);
+      const assignedBlock = await prisma.blockSupplier.findFirst({ where: { supplierId, isActive: true, block: { sectors: { some: { centres: { some: { id: centre.id } } } } } } });
+      if (!assignedBlock) throw new AppError(403, 'SUPPLIER_SCOPE_FORBIDDEN', 'Supplier is not assigned to this block');
       if (parsed.stockRequestId) {
         const stockReq = await prisma.stockRequest.findUnique({
           where: { id: parsed.stockRequestId },
@@ -136,6 +139,7 @@ dispatchRouter.post(
             'Stock request does not match the destination centre'
           );
         }
+        if (stockReq.assignedSupplierId !== supplierId) throw new AppError(403, 'SUPPLIER_SCOPE_FORBIDDEN', 'Order is assigned to another supplier');
         const dispatchableStatuses: StockRequestStatus[] = [
           StockRequestStatus.APPROVED,
           StockRequestStatus.PARTIALLY_APPROVED,
@@ -380,6 +384,7 @@ dispatchRouter.post(
       const dispatch = await prisma.dispatch.findUnique({ where: { id: String(req.params.id) } });
       if (!dispatch) throw new AppError(404, 'NOT_FOUND', 'Dispatch not found');
 
+      if (req.user!.role !== Role.SUPPLIER) await assertCentreInScope(req.user!, dispatch.destinationCentreId);
       if (req.user!.role === Role.SUPPLIER && dispatch.supplierId !== req.user!.supplierId) {
         throw new AppError(403, 'SCOPE_FORBIDDEN', 'Not authorised for this dispatch');
       }

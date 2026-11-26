@@ -75,7 +75,7 @@ Open `http://localhost:5173`.
 | Role | Username | Scope | Primary Experience |
 |---|---|---|---|
 | **AWW** | `aww.vavdi` | Vavdi Bujarg AWC-01 (Godhra) | Gujarati-first Mobile App, Offline Outbox, QR Distribution, Stock Receipt |
-| **AWH** | `awh.vavdi` | Vavdi Bujarg AWC-01 (Godhra) | Simplified Mobile App (Stock, Distribution, Consumption) |
+| **AWH** | `awh.vavdi` | Vavdi Bujarg AWC-01 (Godhra) | Read-only centre stock |
 | **SUPPLIER** | `supplier.gcmmfl` | GCMMFL Panchmahal | Dispatch Creation, Evidence Upload, Discrepancy Tracking |
 | **SUPERVISOR** | `sup.godhra` | Godhra Urban-1 Sector | Discrepancy Review, Physical Reconciliation, Spoilage Approvals, Expiry |
 | **CDPO** | `cdpo.godhra` | Godhra Block | Block Inventory, Reorder Alerts, Supplier Monitoring, Deliveries |
@@ -84,6 +84,18 @@ Open `http://localhost:5173`.
 | **DDO** | `ddo.panchmahal` | Panchmahal District | Executive District Dashboard & Synthetic Malnutrition Trends |
 
 All seeded beneficiaries, centres, batches, and nutrition aggregates are **synthetic demonstration data**.
+
+## Family requests and live updates
+
+The sign-in screen has separate Staff and Guardian portals. Guardians can create an account, select an Anganwadi centre, request child or maternal nutrition support, and track only their own requests. AWWs and supervisors review requests within their assigned scope; CDPOs can monitor their block. Approval invites a centre visit: it does not automatically enrol a beneficiary or deduct stock. Eligibility verification and distribution remain staff workflows.
+
+Active dashboards refresh every 10 seconds and on reconnect, focus, app resume, and successful changes. The refresh indicator reports errors without clearing the session. AWH, DPO, TDO and DDO accounts cannot mutate operational data. Sector, block, district and supplier scopes are enforced by the API.
+
+## Android local testing
+
+Set `VITE_API_BASE_URL` to the backend address reachable by the phone, then run `npm --prefix frontend run build:android`. For local HTTP testing only, also set `CAPACITOR_ALLOW_CLEARTEXT=true`. From `frontend/android`, run `bash ./gradlew assembleDebug` with Java 21 and Android SDK 36 available. The installable debug APK is produced at `app/build/outputs/apk/debug/app-debug.apk`.
+
+For a LAN build, keep the computer and phone on the same Wi-Fi and keep PostgreSQL and the backend running. Do not use `localhost` as the phone's API address. Rebuild if the computer's LAN address changes. Production app and web builds should use the same HTTPS API origin. This local APK is a test build, not a signed production release.
 
 ---
 

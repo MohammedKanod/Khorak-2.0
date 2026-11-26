@@ -82,7 +82,7 @@ export async function checkServerConnectivity(timeoutMs = 3500): Promise<boolean
   }
 }
 
-export async function pullCentreSnapshot(centreId: string): Promise<CachedCentreSnapshot | null> {
+export async function pullCentreSnapshot(centreId: string, allowCached = true): Promise<CachedCentreSnapshot | null> {
   try {
     const res = await apiRequest<{
       success: boolean;
@@ -104,7 +104,8 @@ export async function pullCentreSnapshot(centreId: string): Promise<CachedCentre
     };
     await offlineDb.snapshots.put(snapshot);
     return snapshot;
-  } catch {
+  } catch (err) {
+    if (!allowCached) throw err;
     const cached = await offlineDb.snapshots.get(centreId);
     return cached ?? null;
   }
@@ -134,18 +135,15 @@ export async function listOutboxOperations(centreId?: string): Promise<OutboxRec
   return all.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
-export async function syncOutboxOperations(centreId?: string): Promise<{
+async function pushOutboxOperations(centreId?: string): Promise<{
   synced: number;
   failed: number;
   conflicts: number;
 }> {
   const all = await listOutboxOperations(centreId);
-  const candidates = all.filter(
-    (item) =>
-      item.status === 'saved_locally' ||
-      item.status === 'pending_sync' ||
-      item.status === 'failed'
-  );
+  const currentUser = JSON.parse(localStorage.getItem('khorak_user_profile') || 'null');
+  const candidates = all.filter(item => item.userId === currentUser?.id &&
+    ['saved_locally', 'pending_sync', 'failed'].includes(item.status)).slice(0, 100);
 
   if (candidates.length === 0) {
     return { synced: 0, failed: 0, conflicts: 0 };
@@ -210,6 +208,7 @@ export async function syncOutboxOperations(centreId?: string): Promise<{
       await pullCentreSnapshot(centreId);
     }
 
+    if (synced > 0) window.dispatchEvent(new Event('khorak:data-changed'));
     return { synced, failed, conflicts };
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Network unreachable';
@@ -230,3 +229,13 @@ export async function clearSyncedOutbox(centreId?: string): Promise<void> {
   await offlineDb.outbox.bulkDelete(syncedKeys);
 }
 
+
+const pendingSyncs = new Map<string, ReturnType<typeof pushOutboxOperations>>();
+export function syncOutboxOperations(centreId?: string) {
+  const key = centreId ?? '*';
+  const existing = pendingSyncs.get(key);
+  if (existing) return existing;
+  const pending = pushOutboxOperations(centreId).finally(() => pendingSyncs.delete(key));
+  pendingSyncs.set(key, pending);
+  return pending;
+}

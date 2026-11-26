@@ -1,3 +1,5 @@
+import { useLiveRefresh } from '../../hooks/useLiveRefresh';
+import { LiveSyncStatus } from '../../components/LiveSyncStatus';
 import React, { useEffect, useState } from 'react';
 import {
   AlertTriangle,
@@ -67,8 +69,8 @@ export function SupplierPortal() {
   const [supplierReplyText, setSupplierReplyText] = useState('');
   const [supplierReplyFile, setSupplierReplyFile] = useState<File | null>(null);
 
-  async function loadAll() {
-    setLoading(true);
+  async function fetchPortalData(background: boolean) {
+    if (!background) setLoading(true);
     try {
       const [dRes, discRes, tRes, aplRes, reqRes] = await Promise.all([
         apiRequest<{ success: boolean; data: DispatchRecord[] }>('/api/dispatches'),
@@ -108,18 +110,18 @@ export function SupplierPortal() {
         ]);
       }
     } catch (err) {
-      setBanner({
+      if (!background) setBanner({
         type: 'error',
         text: err instanceof Error ? err.message : 'Failed to load supplier portal',
       });
+      throw err;
     } finally {
       setLoading(false);
     }
   }
 
-  useEffect(() => {
-    loadAll();
-  }, []);
+  const liveSync = useLiveRefresh(fetchPortalData);
+  const loadAll = () => liveSync.refresh();
 
   async function handleCreateDispatch(e: React.FormEvent) {
     e.preventDefault();
@@ -315,6 +317,8 @@ export function SupplierPortal() {
               {t('navCreateDispatch')}
             </button>
           </div>
+
+          <LiveSyncStatus {...liveSync} />
 
           {banner && (
             <div

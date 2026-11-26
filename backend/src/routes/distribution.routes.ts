@@ -244,7 +244,7 @@ const reviewBeneficiarySchema = z.object({
 
 beneficiaryRouter.post(
   '/:id/review',
-  requireRoles(Role.SUPERVISOR, Role.CDPO, Role.DPO, Role.DDO),
+  requireRoles(Role.SUPERVISOR, Role.CDPO),
   async (req, res, next) => {
     try {
       const parsed = reviewBeneficiarySchema.parse(req.body);

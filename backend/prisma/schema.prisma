@@ -9,6 +9,7 @@ datasource db {
 }
 
 enum Role {
+  GUARDIAN
   AWW
   AWH
   SUPPLIER
@@ -162,6 +163,7 @@ model Block {
   createdAt  DateTime @default(now())
 
   district            District             @relation(fields: [districtId], references: [id])
+  supplierProfiles    BlockSupplier[]
   sectors             Sector[]
   users               User[]
   nutritionAggregates NutritionAggregate[]
@@ -184,6 +186,7 @@ model Sector {
 }
 
 model AnganwadiCentre {
+  guardianRequests GuardianRequest[]
   id                    String   @id @default(uuid()) @db.Uuid
   sectorId              String   @db.Uuid
   name                  String
@@ -204,12 +207,15 @@ model AnganwadiCentre {
   reconciliations Reconciliation[]
   alerts          Alert[]
   dispatchAppeals DispatchAppeal[]
+  operationalNotes OperationalNote[]
   stockRequests   StockRequest[]
 
   @@index([sectorId])
 }
 
 model Supplier {
+  blockProfiles BlockSupplier[]
+  assignedRequests StockRequest[]
   id                 String   @id @default(uuid()) @db.Uuid
   name               String
   code               String   @unique
@@ -224,6 +230,7 @@ model Supplier {
 }
 
 model User {
+  guardianRequests GuardianRequest[]
   id           String   @id @default(uuid()) @db.Uuid
   name         String
   nameGu       String?
@@ -607,6 +614,8 @@ model DispatchAppealHistory {
 }
 
 model StockRequest {
+  assignedSupplierId String? @db.Uuid
+  assignedSupplier Supplier? @relation(fields: [assignedSupplierId], references: [id])
   id                String             @id @default(uuid()) @db.Uuid
   requestNumber     String             @unique
   centreId          String             @db.Uuid
@@ -763,3 +772,50 @@ model NutritionAggregate {
   @@index([blockId])
 }
 
+
+// Contact and activation are block-specific: a CDPO cannot edit another block's supplier records.
+model BlockSupplier {
+  id String @id @default(uuid()) @db.Uuid
+  blockId String @db.Uuid
+  supplierId String @db.Uuid
+  contactInformation String
+  isActive Boolean @default(true)
+  block Block @relation(fields: [blockId], references: [id])
+  supplier Supplier @relation(fields: [supplierId], references: [id])
+  @@unique([blockId, supplierId])
+}
+
+model OperationalNote {
+  id String @id @default(uuid()) @db.Uuid
+  centreId String @db.Uuid
+  authorId String @db.Uuid
+  authorName String
+  authorRole Role
+  kind String
+  message String
+  createdAt DateTime @default(now())
+  centre AnganwadiCentre @relation(fields: [centreId], references: [id])
+  @@index([centreId, createdAt])
+}
+
+model GuardianRequest {
+  id String @id @default(uuid()) @db.Uuid
+  reference String @unique
+  guardianId String @db.Uuid
+  centreId String @db.Uuid
+  beneficiaryName String
+  birthYear Int
+  category BeneficiaryCategory
+  message String?
+  status String @default("PENDING")
+  reviewRemarks String?
+  reviewedBy String? @db.Uuid
+  reviewedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  idempotencyKey String @unique
+  guardian User @relation(fields: [guardianId], references: [id])
+  centre AnganwadiCentre @relation(fields: [centreId], references: [id])
+  @@index([guardianId, createdAt])
+  @@index([centreId, status])
+}

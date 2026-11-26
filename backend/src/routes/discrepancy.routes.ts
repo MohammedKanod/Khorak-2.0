@@ -142,7 +142,7 @@ const statusFromAction: Record<string, DiscrepancyStatus> = {
 
 discrepancyRouter.post(
   '/:id/review',
-  requireRoles(Role.SUPERVISOR, Role.CDPO, Role.DPO, Role.DDO),
+  requireRoles(Role.SUPERVISOR, Role.CDPO),
   async (req, res, next) => {
     try {
       const parsed = reviewDiscrepancySchema.parse(req.body);
@@ -200,7 +200,7 @@ discrepancyRouter.post(
 
 discrepancyRouter.post(
   '/:id/resolve',
-  requireRoles(Role.SUPERVISOR, Role.CDPO, Role.DPO, Role.DDO),
+  requireRoles(Role.SUPERVISOR, Role.CDPO),
   async (req, res, next) => {
     try {
       const parsed = z
@@ -494,7 +494,7 @@ async function handleApprovalDecision(
 
 approvalRouter.post(
   '/:id/approve',
-  requireRoles(Role.SUPERVISOR, Role.CDPO, Role.DPO, Role.DDO),
+  requireRoles(Role.SUPERVISOR, Role.CDPO),
   async (req, res, next) => {
     try {
       const parsed = approvalBodySchema.parse(req.body);
@@ -514,7 +514,7 @@ approvalRouter.post(
 
 approvalRouter.post(
   '/:id/reject',
-  requireRoles(Role.SUPERVISOR, Role.CDPO, Role.DPO, Role.DDO),
+  requireRoles(Role.SUPERVISOR, Role.CDPO),
   async (req, res, next) => {
     try {
       const parsed = approvalBodySchema.parse(req.body);

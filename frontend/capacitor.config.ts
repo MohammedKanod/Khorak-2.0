@@ -4,9 +4,13 @@ const config: CapacitorConfig = {
   appId: 'in.gov.panchmahal.khorak',
   appName: 'KHORAK',
   webDir: 'dist',
+  android: {
+    allowMixedContent: process.env.CAPACITOR_ALLOW_CLEARTEXT === 'true',
+  },
   server: {
     androidScheme: 'https',
-    cleartext: true,
+    // Explicit opt-in only for local LAN testing; production uses HTTPS.
+    cleartext: process.env.CAPACITOR_ALLOW_CLEARTEXT === 'true',
   },
   plugins: {
     SplashScreen: {
