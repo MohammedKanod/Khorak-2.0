@@ -19,7 +19,12 @@ import {
 import { acquireStockLock, allocateFefoBatches } from '../services/ledger.service';
 import { refreshCentreAlerts } from '../services/alert.service';
 import { recordAuditLog } from '../lib/audit';
-import { formatIstDate, roundQty } from '../lib/math';
+import { formatIstDate, formatIstMonth, roundQty } from '../lib/math';
+import {
+  acquireEntitlementLock,
+  ensureDefaultEntitlementRules,
+  getBeneficiaryEntitlementSummary,
+} from '../services/entitlement.service';
 
 export const distributionRouter = Router();
 export const beneficiaryRouter = Router();
@@ -88,6 +93,7 @@ const createBeneficiarySchema = z.object({
     'PREGNANT_WOMAN',
     'LACTATING_MOTHER',
     'CHILD_6M_3Y',
+    'SEVERELY_UNDERWEIGHT_CHILD_6M_3Y',
     'CHILD_3Y_6Y',
     'ADOLESCENT_GIRL',
   ]),
@@ -361,26 +367,33 @@ beneficiaryRouter.post(
       }
 
       const today = formatIstDate();
-      const todaysDistributions = await prisma.distribution.findMany({
-        where: {
+      const [todaysDistributions, entitlement] = await Promise.all([
+        prisma.distribution.findMany({
+          where: {
+            centreId,
+            beneficiaryReferenceId: beneficiary.id,
+            distributionDay: today,
+          },
+          select: {
+            id: true,
+            productId: true,
+            quantity: true,
+            distributedAt: true,
+            product: { select: { name: true, nameGu: true, unit: true } },
+          },
+        }),
+        getBeneficiaryEntitlementSummary(prisma, {
+          beneficiaryId: beneficiary.id,
           centreId,
-          beneficiaryReferenceId: beneficiary.id,
-          distributionDay: today,
-        },
-        select: {
-          id: true,
-          productId: true,
-          quantity: true,
-          distributedAt: true,
-          product: { select: { name: true, nameGu: true, unit: true } },
-        },
-      });
+        }),
+      ]);
 
       res.json({
         success: true,
         data: {
           beneficiary,
           todaysDistributions,
+          entitlement,
           verificationMode: 'LOCAL_OFFLINE_XML_MAPPING',
         },
       });
@@ -391,7 +404,7 @@ beneficiaryRouter.post(
 );
 
 const distributionLineItemSchema = z.object({
-  productId: z.string().uuid(),
+  productId: z.string().uuid().optional(),
   batchId: z.string().uuid().optional(),
   quantity: z.coerce.number().positive(),
 });
@@ -407,32 +420,28 @@ const createDistributionSchema = z
     distributedAt: z.string().optional(),
     idempotencyKey: z.string().min(8).max(120).optional(),
     remarks: z.string().max(300).optional(),
+    exceptionOverride: z.boolean().optional(),
+    exceptionReason: z.string().max(400).trim().optional(),
   })
   .refine(
-    (d) =>
-      (Array.isArray(d.items) && d.items.length > 0) ||
-      (Boolean(d.productId) && d.quantity !== undefined),
-    { message: 'Provide either items[] or productId + quantity' }
+    (d) => (Array.isArray(d.items) && d.items.length > 0) || d.quantity !== undefined,
+    { message: 'Provide either items[] or quantity' }
   );
+
+const ADMIN_OVERRIDE_ROLES: Role[] = [Role.SUPERVISOR, Role.CDPO, Role.DPO, Role.DDO];
 
 export async function executeMultiDistribution(params: {
   userId: string;
+  userRole?: Role;
   centreId: string;
   beneficiaryReferenceId: string;
-  items: Array<{ productId: string; batchId?: string; quantity: number }>;
+  items: Array<{ productId?: string; batchId?: string; quantity: number }>;
   distributedAt?: Date;
   idempotencyKey: string;
   remarks?: string;
+  exceptionOverride?: boolean;
+  exceptionReason?: string;
 }) {
-  // Reject duplicate productId within the same distribution submission
-  const productSet = new Set<string>();
-  for (const item of params.items) {
-    if (productSet.has(item.productId)) {
-      throw new AppError(400, 'DUPLICATE_PRODUCT_IN_REQUEST', 'Duplicate product in distribution items');
-    }
-    productSet.add(item.productId);
-  }
-
   const keyMatches = await prisma.distribution.findMany({
     where: {
       OR: [
@@ -447,6 +456,7 @@ export async function executeMultiDistribution(params: {
           localReference: true,
           displayName: true,
           displayNameGu: true,
+          beneficiaryCategory: true,
         },
       },
       product: { select: { id: true, name: true, nameGu: true, unit: true } },
@@ -484,6 +494,79 @@ export async function executeMultiDistribution(params: {
     );
   }
 
+  const isExceptionOverride = Boolean(params.exceptionOverride);
+  if (isExceptionOverride) {
+    if (!params.userRole || !ADMIN_OVERRIDE_ROLES.includes(params.userRole)) {
+      throw new AppError(
+        403,
+        'EXCEPTION_FORBIDDEN',
+        'Only authorised Supervisors/Officers can approve an entitlement exception'
+      );
+    }
+    if (!params.exceptionReason || params.exceptionReason.trim().length < 5) {
+      throw new AppError(
+        400,
+        'EXCEPTION_REASON_REQUIRED',
+        'A detailed exception reason (min 5 characters) is mandatory for audit compliance'
+      );
+    }
+  }
+
+  await ensureDefaultEntitlementRules(prisma);
+  const rule = await prisma.entitlementRule.findUnique({
+    where: { beneficiaryCategory: beneficiary.beneficiaryCategory },
+    include: { product: true },
+  });
+
+  if (!isExceptionOverride) {
+    if (
+      !rule ||
+      !rule.isActive ||
+      !rule.isConfigured ||
+      !rule.productId ||
+      rule.monthlyLimit === null
+    ) {
+      throw new AppError(
+        400,
+        'ENTITLEMENT_NOT_CONFIGURED',
+        `Entitlement for category ${beneficiary.beneficiaryCategory} is pending official confirmation and cannot be automatically allocated`
+      );
+    }
+  }
+
+  const resolvedItems: Array<{ productId: string; batchId?: string; quantity: number }> = [];
+  const productSet = new Set<string>();
+  for (const rawItem of params.items) {
+    const qty = roundQty(rawItem.quantity);
+    if (qty <= 0) {
+      throw new AppError(400, 'INVALID_QUANTITY', 'Distribution quantity must be positive');
+    }
+    const targetProductId = rawItem.productId || rule?.productId;
+    if (!targetProductId) {
+      throw new AppError(
+        400,
+        'PRODUCT_REQUIRED',
+        'No entitled product configured for this beneficiary category'
+      );
+    }
+    if (!isExceptionOverride && rule?.productId && targetProductId !== rule.productId) {
+      throw new AppError(
+        403,
+        'ENTITLEMENT_PRODUCT_MISMATCH',
+        `Beneficiary category ${beneficiary.beneficiaryCategory} is only entitled to ${rule.product?.name || 'its configured nutrition product'}`
+      );
+    }
+    if (productSet.has(targetProductId)) {
+      throw new AppError(
+        400,
+        'DUPLICATE_PRODUCT_IN_REQUEST',
+        'Duplicate product in distribution items'
+      );
+    }
+    productSet.add(targetProductId);
+    resolvedItems.push({ productId: targetProductId, batchId: rawItem.batchId, quantity: qty });
+  }
+
   const products = await prisma.product.findMany({
     where: { id: { in: Array.from(productSet) }, isActive: true },
   });
@@ -494,20 +577,53 @@ export async function executeMultiDistribution(params: {
 
   const distTime = params.distributedAt || new Date();
   const distributionDay = formatIstDate(distTime);
+  const distributionMonth = formatIstMonth(distTime);
 
   let createdList;
   try {
     createdList = await prisma.$transaction(async (tx) => {
       const results = [];
 
+      // Serialize concurrent allocations for the same beneficiary + calendar month
+      await acquireEntitlementLock(tx, params.beneficiaryReferenceId, distributionMonth);
+
       // Deterministic lock ordering by productId prevents deadlocks under concurrency
-      const sortedItems = [...params.items].sort((a, b) =>
+      const sortedItems = [...resolvedItems].sort((a, b) =>
         a.productId.localeCompare(b.productId)
       );
 
       for (let itemIdx = 0; itemIdx < sortedItems.length; itemIdx++) {
         const line = sortedItems[itemIdx];
         const product = productMap.get(line.productId)!;
+
+        let alreadyDistributed = 0;
+        if (!isExceptionOverride && rule && rule.monthlyLimit !== null) {
+          const agg = await tx.distribution.aggregate({
+            _sum: { quantity: true },
+            where: {
+              centreId: params.centreId,
+              beneficiaryReferenceId: params.beneficiaryReferenceId,
+              productId: line.productId,
+              distributionMonth,
+            },
+          });
+          alreadyDistributed = roundQty(agg._sum.quantity || 0);
+          const remaining = Math.max(0, roundQty(rule.monthlyLimit - alreadyDistributed));
+          if (roundQty(alreadyDistributed + line.quantity) > rule.monthlyLimit) {
+            if (remaining <= 0) {
+              throw new AppError(
+                409,
+                'ENTITLEMENT_EXHAUSTED',
+                `Monthly limit of ${rule.monthlyLimit} ${product.unit} reached for ${beneficiary.displayName} in ${distributionMonth}`
+              );
+            }
+            throw new AppError(
+              400,
+              'ENTITLEMENT_LIMIT_EXCEEDED',
+              `Requested ${line.quantity} ${product.unit} exceeds remaining monthly entitlement of ${remaining} (${alreadyDistributed}/${rule.monthlyLimit} distributed in ${distributionMonth})`
+            );
+          }
+        }
 
         await acquireStockLock(tx, params.centreId, line.productId);
 
@@ -534,7 +650,10 @@ export async function executeMultiDistribution(params: {
             distributedBy: params.userId,
             distributedAt: distTime,
             distributionDay,
+            distributionMonth,
             idempotencyKey: itemIdempKey,
+            isExceptionOverride,
+            exceptionReason: isExceptionOverride ? params.exceptionReason!.trim() : null,
             remarks: params.remarks,
           },
           include: {
@@ -575,16 +694,23 @@ export async function executeMultiDistribution(params: {
 
         await recordAuditLog(tx, {
           actorId: params.userId,
-          action: 'BENEFICIARY_DISTRIBUTION',
+          action: isExceptionOverride
+            ? 'BENEFICIARY_DISTRIBUTION_OVERRIDE'
+            : 'BENEFICIARY_DISTRIBUTION',
           entityType: 'Distribution',
           entityId: distribution.id,
           afterState: {
             beneficiaryLocalRef: beneficiary.localReference,
+            beneficiaryCategory: beneficiary.beneficiaryCategory,
             productId: line.productId,
             quantity: line.quantity,
+            distributionMonth,
+            priorDistributedThisMonth: alreadyDistributed,
+            monthlyLimit: rule?.monthlyLimit ?? null,
+            isExceptionOverride,
             allocations,
           },
-          remarks: params.remarks,
+          remarks: isExceptionOverride ? params.exceptionReason!.trim() : params.remarks,
         });
 
         results.push(distribution);
@@ -606,7 +732,7 @@ export async function executeMultiDistribution(params: {
             ],
           },
           include: {
-            beneficiary: { select: { id: true, localReference: true, displayName: true, displayNameGu: true } },
+            beneficiary: { select: { id: true, localReference: true, displayName: true, displayNameGu: true, beneficiaryCategory: true } },
             product: { select: { id: true, name: true, nameGu: true, unit: true } },
             batch: { select: { id: true, batchNumber: true, expiryDate: true } },
           },
@@ -622,7 +748,7 @@ export async function executeMultiDistribution(params: {
       throw new AppError(
         409,
         'DUPLICATE_DISTRIBUTION',
-        `${beneficiary.displayName} has already received one or more selected items on ${distributionDay}`
+        `${beneficiary.displayName} has already received this product on ${distributionDay}`
       );
     }
     throw err;
@@ -638,9 +764,10 @@ export async function executeMultiDistribution(params: {
 
 export async function executeDistribution(params: {
   userId: string;
+  userRole?: Role;
   centreId: string;
   beneficiaryReferenceId: string;
-  productId: string;
+  productId?: string;
   batchId?: string;
   quantity: number;
   distributedAt?: Date;
@@ -649,6 +776,7 @@ export async function executeDistribution(params: {
 }) {
   return executeMultiDistribution({
     userId: params.userId,
+    userRole: params.userRole,
     centreId: params.centreId,
     beneficiaryReferenceId: params.beneficiaryReferenceId,
     items: [
@@ -683,7 +811,7 @@ distributionRouter.post(
           ? parsed.items
           : [
               {
-                productId: parsed.productId!,
+                productId: parsed.productId,
                 batchId: parsed.batchId,
                 quantity: parsed.quantity!,
               },
@@ -691,12 +819,15 @@ distributionRouter.post(
 
       const result = await executeMultiDistribution({
         userId: req.user!.id,
+        userRole: req.user!.role,
         centreId,
         beneficiaryReferenceId: parsed.beneficiaryReferenceId,
         items,
         distributedAt: parsed.distributedAt ? new Date(parsed.distributedAt) : undefined,
         idempotencyKey,
         remarks: parsed.remarks,
+        exceptionOverride: parsed.exceptionOverride,
+        exceptionReason: parsed.exceptionReason,
       });
 
       res.status(result.deduplicated ? 200 : 201).json({

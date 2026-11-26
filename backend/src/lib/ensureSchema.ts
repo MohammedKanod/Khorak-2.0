@@ -1,5 +1,6 @@
 import { prisma } from './prisma';
 import { computeHmacCredentialRef, generateCentreSalt } from './credential';
+import { ensureDefaultEntitlementRules } from '../services/entitlement.service';
 
 let schemaReadyPromise: Promise<void> | null = null;
 
@@ -11,12 +12,20 @@ async function isSchemaUpToDate(): Promise<boolean> {
         WHERE table_schema = 'public' AND table_name = 'AnganwadiCentre' AND column_name = 'offlineCredentialSalt'
       )
       AND EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'Distribution' AND column_name = 'distributionMonth'
+      )
+      AND EXISTS (
         SELECT 1 FROM information_schema.tables
         WHERE table_schema = 'public' AND table_name = 'DispatchAppeal'
       )
       AND EXISTS (
         SELECT 1 FROM information_schema.tables
         WHERE table_schema = 'public' AND table_name = 'StockRequest'
+      )
+      AND EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = 'EntitlementRule'
       )
     ) AS "ready"
   `);
@@ -26,6 +35,7 @@ async function isSchemaUpToDate(): Promise<boolean> {
 async function applyIdempotentUpgrade(): Promise<void> {
   const ddlStatements = [
     `DO $$ BEGIN CREATE TYPE "AppealStatus" AS ENUM ('DRAFT', 'SUBMITTED', 'AWAITING_SUPPLIER_RESPONSE', 'SUPPLIER_RESPONDED', 'UNDER_REVIEW', 'RESOLVED', 'REJECTED', 'ESCALATED'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;`,
+    `DO $$ BEGIN ALTER TYPE "BeneficiaryCategory" ADD VALUE IF NOT EXISTS 'SEVERELY_UNDERWEIGHT_CHILD_6M_3Y'; EXCEPTION WHEN duplicate_object THEN NULL; END $$;`,
     `DO $$ BEGIN CREATE TYPE "StockRequestReason" AS ENUM ('LOW_STOCK', 'EXPECTED_DEMAND', 'DAMAGED_STOCK', 'OTHER'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;`,
     `DO $$ BEGIN CREATE TYPE "StockRequestStatus" AS ENUM ('DRAFT', 'SUBMITTED', 'PENDING_APPROVAL', 'APPROVED', 'PARTIALLY_APPROVED', 'REJECTED', 'AWAITING_DISPATCH', 'DISPATCHED', 'RECEIVED', 'COMPLETED'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;`,
     `DROP INDEX IF EXISTS "Distribution_beneficiaryReferenceId_productId_distributionD_idx"`,
@@ -33,6 +43,26 @@ async function applyIdempotentUpgrade(): Promise<void> {
     `ALTER TABLE "BeneficiaryReference" ADD COLUMN IF NOT EXISTS "idempotencyKey" TEXT`,
     `DO $$ BEGIN ALTER TABLE "BeneficiaryReference" ALTER COLUMN "maskedIdLast4" DROP NOT NULL; EXCEPTION WHEN OTHERS THEN NULL; END $$;`,
     `ALTER TABLE "Dispatch" ADD COLUMN IF NOT EXISTS "stockRequestId" UUID`,
+    `ALTER TABLE "Distribution" ADD COLUMN IF NOT EXISTS "distributionMonth" TEXT`,
+    `ALTER TABLE "Distribution" ADD COLUMN IF NOT EXISTS "isExceptionOverride" BOOLEAN NOT NULL DEFAULT false`,
+    `ALTER TABLE "Distribution" ADD COLUMN IF NOT EXISTS "exceptionReason" TEXT`,
+    `UPDATE "Distribution" SET "distributionMonth" = LEFT("distributionDay", 7) WHERE "distributionMonth" IS NULL`,
+    `DO $$ BEGIN ALTER TABLE "Distribution" ALTER COLUMN "distributionMonth" SET NOT NULL; EXCEPTION WHEN OTHERS THEN NULL; END $$;`,
+    `CREATE TABLE IF NOT EXISTS "EntitlementRule" (
+      "id" UUID NOT NULL,
+      "beneficiaryCategory" "BeneficiaryCategory" NOT NULL,
+      "productId" UUID,
+      "monthlyLimit" DOUBLE PRECISION,
+      "packetWeightGrams" INTEGER,
+      "packetWeightLabel" TEXT,
+      "isConfigured" BOOLEAN NOT NULL DEFAULT true,
+      "isActive" BOOLEAN NOT NULL DEFAULT true,
+      "notes" TEXT,
+      "updatedBy" UUID,
+      "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CONSTRAINT "EntitlementRule_pkey" PRIMARY KEY ("id")
+    )`,
     `CREATE TABLE IF NOT EXISTS "DispatchAppeal" (
       "id" UUID NOT NULL,
       "appealReference" TEXT NOT NULL,
@@ -115,6 +145,9 @@ async function applyIdempotentUpgrade(): Promise<void> {
     `CREATE INDEX IF NOT EXISTS "StockRequestHistory_stockRequestId_createdAt_idx" ON "StockRequestHistory"("stockRequestId", "createdAt")`,
     `CREATE UNIQUE INDEX IF NOT EXISTS "BeneficiaryReference_idempotencyKey_key" ON "BeneficiaryReference"("idempotencyKey")`,
     `CREATE INDEX IF NOT EXISTS "Dispatch_stockRequestId_idx" ON "Dispatch"("stockRequestId")`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS "EntitlementRule_beneficiaryCategory_key" ON "EntitlementRule"("beneficiaryCategory")`,
+    `CREATE INDEX IF NOT EXISTS "EntitlementRule_isActive_idx" ON "EntitlementRule"("isActive")`,
+    `CREATE INDEX IF NOT EXISTS "Distribution_centreId_beneficiaryReferenceId_productId_dist_idx" ON "Distribution"("centreId", "beneficiaryReferenceId", "productId", "distributionMonth")`,
     `DO $$ BEGIN CREATE UNIQUE INDEX IF NOT EXISTS "Distribution_centreId_beneficiaryReferenceId_productId_dist_key" ON "Distribution"("centreId", "beneficiaryReferenceId", "productId", "distributionDay"); EXCEPTION WHEN OTHERS THEN NULL; END $$;`,
     `DO $$ BEGIN ALTER TABLE "Dispatch" ADD CONSTRAINT "Dispatch_stockRequestId_fkey" FOREIGN KEY ("stockRequestId") REFERENCES "StockRequest"("id") ON DELETE SET NULL ON UPDATE CASCADE; EXCEPTION WHEN duplicate_object THEN NULL; END $$;`,
     `DO $$ BEGIN ALTER TABLE "DispatchAppeal" ADD CONSTRAINT "DispatchAppeal_discrepancyCaseId_fkey" FOREIGN KEY ("discrepancyCaseId") REFERENCES "DiscrepancyCase"("id") ON DELETE RESTRICT ON UPDATE CASCADE; EXCEPTION WHEN duplicate_object THEN NULL; END $$;`,
@@ -134,11 +167,15 @@ async function applyIdempotentUpgrade(): Promise<void> {
     `DO $$ BEGIN ALTER TABLE "StockRequest" ADD CONSTRAINT "StockRequest_reviewedBy_fkey" FOREIGN KEY ("reviewedBy") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE; EXCEPTION WHEN duplicate_object THEN NULL; END $$;`,
     `DO $$ BEGIN ALTER TABLE "StockRequestHistory" ADD CONSTRAINT "StockRequestHistory_stockRequestId_fkey" FOREIGN KEY ("stockRequestId") REFERENCES "StockRequest"("id") ON DELETE CASCADE ON UPDATE CASCADE; EXCEPTION WHEN duplicate_object THEN NULL; END $$;`,
     `DO $$ BEGIN ALTER TABLE "StockRequestHistory" ADD CONSTRAINT "StockRequestHistory_actorId_fkey" FOREIGN KEY ("actorId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE; EXCEPTION WHEN duplicate_object THEN NULL; END $$;`,
+    `DO $$ BEGIN ALTER TABLE "EntitlementRule" ADD CONSTRAINT "EntitlementRule_productId_fkey" FOREIGN KEY ("productId") REFERENCES "Product"("id") ON DELETE SET NULL ON UPDATE CASCADE; EXCEPTION WHEN duplicate_object THEN NULL; END $$;`,
+    `DO $$ BEGIN ALTER TABLE "EntitlementRule" ADD CONSTRAINT "EntitlementRule_updatedBy_fkey" FOREIGN KEY ("updatedBy") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE; EXCEPTION WHEN duplicate_object THEN NULL; END $$;`,
   ];
 
   for (const stmt of ddlStatements) {
     await prisma.$executeRawUnsafe(stmt);
   }
+
+  await ensureDefaultEntitlementRules(prisma);
 
   // Ensure every active centre has an offline HMAC salt and upgrade any legacy maskedIdLast4 beneficiary rows
   const centres = await prisma.anganwadiCentre.findMany({

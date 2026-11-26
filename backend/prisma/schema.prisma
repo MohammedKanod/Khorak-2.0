@@ -97,6 +97,7 @@ enum BeneficiaryCategory {
   PREGNANT_WOMAN
   LACTATING_MOTHER
   CHILD_6M_3Y
+  SEVERELY_UNDERWEIGHT_CHILD_6M_3Y
   CHILD_3Y_6Y
   ADOLESCENT_GIRL
 }
@@ -272,6 +273,7 @@ model User {
   requestedStockRequests StockRequest[]         @relation("StockRequestRequestedBy")
   reviewedStockRequests  StockRequest[]         @relation("StockRequestReviewedBy")
   stockRequestHistory    StockRequestHistory[]
+  updatedEntitlementRules EntitlementRule[]     @relation("EntitlementRuleUpdatedBy")
   approvals              Approval[]
   auditLogs              AuditLog[]
   syncOperations         SyncOperation[]
@@ -346,6 +348,7 @@ model Product {
   alerts          Alert[]
   dispatchAppeals DispatchAppeal[]
   stockRequests   StockRequest[]
+  entitlementRules EntitlementRule[]
 }
 
 model ProductBatch {
@@ -489,7 +492,10 @@ model Distribution {
   distributedBy          String   @db.Uuid
   distributedAt          DateTime @default(now())
   distributionDay        String   // YYYY-MM-DD in IST/local date for daily duplicate ration protection
+  distributionMonth      String   // YYYY-MM in IST for monthly entitlement period enforcement
   idempotencyKey         String   @unique
+  isExceptionOverride    Boolean  @default(false)
+  exceptionReason        String?
   remarks                String?
 
   centre      AnganwadiCentre      @relation(fields: [centreId], references: [id])
@@ -499,7 +505,28 @@ model Distribution {
   worker      User                 @relation(fields: [distributedBy], references: [id])
 
   @@unique([centreId, beneficiaryReferenceId, productId, distributionDay])
+  @@index([centreId, beneficiaryReferenceId, productId, distributionMonth])
   @@index([centreId, distributedAt])
+}
+
+model EntitlementRule {
+  id                  String              @id @default(uuid()) @db.Uuid
+  beneficiaryCategory BeneficiaryCategory @unique
+  productId           String?             @db.Uuid
+  monthlyLimit        Float?
+  packetWeightGrams   Int?
+  packetWeightLabel   String?
+  isConfigured        Boolean             @default(true)
+  isActive            Boolean             @default(true)
+  notes               String?
+  updatedBy           String?             @db.Uuid
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+
+  product Product? @relation(fields: [productId], references: [id])
+  updater User?    @relation("EntitlementRuleUpdatedBy", fields: [updatedBy], references: [id])
+
+  @@index([isActive])
 }
 
 model SpoilageReport {

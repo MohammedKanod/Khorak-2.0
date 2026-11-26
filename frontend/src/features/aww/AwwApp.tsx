@@ -13,12 +13,10 @@ import {
   LogOut,
   PackageCheck,
   PackagePlus,
-  Plus,
   QrCode,
   RefreshCw,
   ShieldAlert,
   ShieldCheck,
-  Trash2,
   Truck,
   User,
   UserPlus,
@@ -28,6 +26,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useI18n } from '../../locales/translations';
 import { apiRequest } from '../../lib/api';
 import {
+  computeOfflineEntitlementSummary,
   enqueueOfflineOperation,
   getCachedSnapshot,
   listOutboxOperations,
@@ -37,9 +36,13 @@ import {
 } from '../../lib/offlineDb';
 import {
   AlertItem,
+  BENEFICIARY_CATEGORY_OPTIONS,
+  BeneficiaryEntitlementSummary,
   BeneficiaryReference,
   DispatchRecord,
   DistributionRecord,
+  EntitlementRule,
+  MonthlyDistributionLite,
   ProductInventorySummary,
   StockRequest,
   StockRequestReason,
@@ -73,6 +76,8 @@ export function AwwApp() {
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
   const [beneficiaries, setBeneficiaries] = useState<BeneficiaryReference[]>([]);
   const [distributions, setDistributions] = useState<DistributionRecord[]>([]);
+  const [entitlementRules, setEntitlementRules] = useState<EntitlementRule[]>([]);
+  const [monthlyDistributions, setMonthlyDistributions] = useState<MonthlyDistributionLite[]>([]);
   const [ledgerEvents, setLedgerEvents] = useState<Array<{
     id: string;
     eventType: string;
@@ -118,13 +123,19 @@ export function AwwApp() {
   const [reqReason, setReqReason] = useState<StockRequestReason>('LOW_STOCK');
   const [reqRemarks, setReqRemarks] = useState('');
 
-  // Multi-item Distribution form state
+  // Entitlement-Validated Distribution form state
   const [matchedBeneficiary, setMatchedBeneficiary] = useState<BeneficiaryReference | null>(null);
   const [verifiedLabel, setVerifiedLabel] = useState<string | null>(null);
-  const [distItems, setDistItems] = useState<
-    Array<{ rowId: string; productId: string; batchId: string; quantity: string }>
-  >([]);
+  const [distEntitlement, setDistEntitlement] = useState<BeneficiaryEntitlementSummary | null>(null);
+  const [distBatchId, setDistBatchId] = useState('');
+  const [distQty, setDistQty] = useState('1');
   const [submitting, setSubmitting] = useState(false);
+
+  function getCategoryLabel(category: string): string {
+    const found = BENEFICIARY_CATEGORY_OPTIONS.find((opt) => opt.value === category);
+    if (!found) return category;
+    return lang === 'gu' ? found.labelGu : found.label;
+  }
 
   // Receive form state
   const [receiptQuantities, setReceiptQuantities] = useState<
@@ -175,6 +186,8 @@ export function AwwApp() {
           setAlerts(snap.alerts);
           setBeneficiaries(snap.beneficiaries);
           setDistributions(snap.recentDistributions);
+          setEntitlementRules(snap.entitlementRules ?? []);
+          setMonthlyDistributions(snap.monthlyDistributions ?? []);
           setStockRequests(reqRes?.data ?? snap.stockRequests ?? []);
           if (snap.offlineCredentialSalt) setCentreSalt(snap.offlineCredentialSalt);
         }
@@ -189,6 +202,8 @@ export function AwwApp() {
           setAlerts(cached.alerts);
           setBeneficiaries(cached.beneficiaries);
           setDistributions(cached.recentDistributions);
+          setEntitlementRules(cached.entitlementRules ?? []);
+          setMonthlyDistributions(cached.monthlyDistributions ?? []);
           setStockRequests(cached.stockRequests ?? []);
           if (cached.offlineCredentialSalt) setCentreSalt(cached.offlineCredentialSalt);
         }
@@ -202,6 +217,8 @@ export function AwwApp() {
         setAlerts(cached.alerts);
         setBeneficiaries(cached.beneficiaries);
         setDistributions(cached.recentDistributions);
+        setEntitlementRules(cached.entitlementRules ?? []);
+        setMonthlyDistributions(cached.monthlyDistributions ?? []);
         setStockRequests(cached.stockRequests ?? []);
         if (cached.offlineCredentialSalt) setCentreSalt(cached.offlineCredentialSalt);
       } else {
@@ -350,12 +367,17 @@ export function AwwApp() {
     let match = beneficiaries.find(
       (b) => b.protectedCredentialReference === cred.protectedCredentialReference
     );
+    let serverEntitlement: BeneficiaryEntitlementSummary | null = null;
 
-    if (!match && (await refreshConnectivity())) {
+    const online = await refreshConnectivity();
+    if (!match && online) {
       try {
         const res = await apiRequest<{
           success: boolean;
-          data: { beneficiary: BeneficiaryReference };
+          data: {
+            beneficiary: BeneficiaryReference;
+            entitlement?: BeneficiaryEntitlementSummary | null;
+          };
         }>('/api/beneficiaries/verify-offline-credential', {
           method: 'POST',
           body: JSON.stringify({
@@ -364,6 +386,7 @@ export function AwwApp() {
           }),
         });
         match = res.data.beneficiary;
+        serverEntitlement = res.data.entitlement ?? null;
       } catch (err) {
         setBanner({
           type: 'error',
@@ -399,53 +422,115 @@ export function AwwApp() {
       return;
     }
 
+    if (!serverEntitlement && online) {
+      try {
+        const entRes = await apiRequest<{
+          success: boolean;
+          data: BeneficiaryEntitlementSummary;
+        }>(
+          `/api/entitlements/beneficiary/${encodeURIComponent(match.id)}?centreId=${encodeURIComponent(centreId)}`
+        );
+        serverEntitlement = entRes.data;
+      } catch {
+        // Fall back to offline calculation below if server query fails transiently
+      }
+    }
+
+    const freshOutbox = await listOutboxOperations(centreId);
+    const computedEntitlement =
+      serverEntitlement ??
+      computeOfflineEntitlementSummary({
+        beneficiary: match,
+        entitlementRules,
+        monthlyDistributions,
+        inventorySummary: inventory,
+        outbox: freshOutbox,
+      });
+
     setMatchedBeneficiary(match);
     setVerifiedLabel(`${cred.format} • Local Credential Match`);
-    const defaultThr = inventory.find((p) => p.category === 'THR' && p.usableStock > 0) || inventory[0];
-    setDistItems(
-      defaultThr
-        ? [{ rowId: crypto.randomUUID(), productId: defaultThr.productId, batchId: '', quantity: '1' }]
-        : []
-    );
+    setDistEntitlement(computedEntitlement);
+    setDistBatchId('');
+    setDistQty(computedEntitlement.maxAllocatable > 0 ? '1' : '0');
     setDistModalOpen(true);
   }
 
   async function submitDistribution(e: React.FormEvent) {
     e.preventDefault();
-    if (!matchedBeneficiary || distItems.length === 0) return;
+    if (!matchedBeneficiary || !distEntitlement) return;
+
+    if (!distEntitlement.canDistribute || !distEntitlement.product) {
+      setBanner({
+        type: 'error',
+        text:
+          lang === 'gu'
+            ? 'આ લાભાર્થી હાલમાં આ મહિને પોષણ વિતરણ માટે પાત્ર નથી.'
+            : 'Beneficiary is not eligible for ration distribution in the current status.',
+      });
+      return;
+    }
+
+    const qty = Number(distQty);
+    if (!Number.isFinite(qty) || qty <= 0 || qty > distEntitlement.maxAllocatable) {
+      setBanner({
+        type: 'error',
+        text:
+          lang === 'gu'
+            ? `જથ્થો 1 થી ${distEntitlement.maxAllocatable} ની વચ્ચે હોવો જોઈએ.`
+            : `Quantity must be between 1 and ${distEntitlement.maxAllocatable}.`,
+      });
+      return;
+    }
+
     setSubmitting(true);
     setBanner(null);
-
-    const parsedItems = distItems.map((row) => ({
-      productId: row.productId,
-      ...(row.batchId ? { batchId: row.batchId } : {}),
-      quantity: Number(row.quantity),
-    }));
 
     const opUuid = `dist-${crypto.randomUUID()}`;
     const payload = {
       centreId,
       beneficiaryReferenceId: matchedBeneficiary.id,
-      items: parsedItems,
+      productId: distEntitlement.product.id,
+      ...(distBatchId ? { batchId: distBatchId } : {}),
+      quantity: qty,
       idempotencyKey: opUuid,
     };
 
     try {
       const reachable = await refreshConnectivity();
       if (!reachable) {
-        const itemSummary = parsedItems
-          .map((it) => {
-            const p = inventory.find((x) => x.productId === it.productId);
-            return `${it.quantity} ${p?.unit || ''} ${p?.productName || ''}`;
-          })
-          .join(', ');
+        const latestOutbox = await listOutboxOperations(centreId);
+        const revalidated = computeOfflineEntitlementSummary({
+          beneficiary: matchedBeneficiary,
+          entitlementRules,
+          monthlyDistributions,
+          inventorySummary: inventory,
+          outbox: latestOutbox,
+        });
+        if (!revalidated.canDistribute || qty > revalidated.maxAllocatable) {
+          setDistEntitlement(revalidated);
+          setBanner({
+            type: 'error',
+            text:
+              lang === 'gu'
+                ? 'માસિક મર્યાદા અથવા ઉપલબ્ધ સ્ટોક કરતાં વધુ વિતરણ શક્ય નથી.'
+                : `Cannot exceed remaining monthly entitlement (${revalidated.maxAllocatable} packets).`,
+          });
+          setSubmitting(false);
+          return;
+        }
+
+        const prodLabel =
+          lang === 'gu' ? distEntitlement.product.nameGu : distEntitlement.product.name;
+        const weightSuffix = distEntitlement.packetWeightLabel
+          ? ` (${distEntitlement.packetWeightLabel})`
+          : '';
         await enqueueOfflineOperation({
           operationUuid: opUuid,
           operationType: 'DISTRIBUTION',
           centreId,
           userId: user!.id,
-          summaryLabel: `Distribute (${itemSummary}) to ${matchedBeneficiary.displayName}`,
-          summaryLabelGu: `${matchedBeneficiary.displayNameGu || matchedBeneficiary.displayName} ને વિતરણ (${itemSummary})`,
+          summaryLabel: `Distribute ${qty} ${distEntitlement.product.unit} ${distEntitlement.product.name}${weightSuffix} to ${matchedBeneficiary.displayName}`,
+          summaryLabelGu: `${matchedBeneficiary.displayNameGu || matchedBeneficiary.displayName} ને ${qty} ${distEntitlement.product.unit} ${prodLabel}${weightSuffix} વિતરણ`,
           payload,
         });
         setDistModalOpen(false);
@@ -454,8 +539,8 @@ export function AwwApp() {
           type: 'success',
           text:
             lang === 'gu'
-              ? 'બહુવિધ વસ્તુ વિતરણ સ્થાનિક રીતે સાચવેલ — ઓનલાઇન થતાં સિંક થશે.'
-              : 'Multi-item distribution saved locally — pending synchronisation.',
+              ? 'પોષણ વિતરણ સ્થાનિક રીતે સાચવેલ — ઓનલાઇન થતાં સિંક થશે.'
+              : 'Ration distribution saved locally — pending synchronisation.',
         });
         return;
       }
@@ -471,8 +556,8 @@ export function AwwApp() {
         type: 'success',
         text:
           lang === 'gu'
-            ? `${matchedBeneficiary.displayNameGu || matchedBeneficiary.displayName} ને પોષણ વિતરણ નોંધાયું.`
-            : `Nutrition distribution recorded for ${matchedBeneficiary.displayName}.`,
+            ? `${matchedBeneficiary.displayNameGu || matchedBeneficiary.displayName} ને ${qty} પેકેટ ${distEntitlement.product.nameGu} વિતરણ નોંધાયું.`
+            : `${qty} ${distEntitlement.product.unit} of ${distEntitlement.product.name} recorded for ${matchedBeneficiary.displayName}.`,
       });
     } catch (err) {
       setBanner({
@@ -1341,6 +1426,16 @@ export function AwwApp() {
                     <div className="space-y-2">
                       {beneficiaries.map((b) => {
                         const status = b.status || 'APPROVED';
+                        const entSummary =
+                          status === 'APPROVED' && entitlementRules.length > 0
+                            ? computeOfflineEntitlementSummary({
+                                beneficiary: b,
+                                entitlementRules,
+                                monthlyDistributions,
+                                inventorySummary: inventory,
+                                outbox,
+                              })
+                            : null;
                         return (
                           <div
                             key={b.id}
@@ -1351,8 +1446,17 @@ export function AwwApp() {
                                 {lang === 'gu' ? b.displayNameGu || b.displayName : b.displayName}
                               </p>
                               <p className="font-mono-num text-[11px] text-[var(--text-muted)]">
-                                {b.localReference} • YOB {b.yob || '—'} • {b.beneficiaryCategory}
+                                {b.localReference} • YOB {b.yob || '—'} • {getCategoryLabel(b.beneficiaryCategory)}
                               </p>
+                              {entSummary && (
+                                <p className="mt-0.5 text-[11px] font-medium text-[var(--text-secondary)]">
+                                  {entSummary.eligibilityStatus === 'PENDING_CONFIGURATION'
+                                    ? lang === 'gu'
+                                      ? `${entSummary.product?.nameGu || 'પૂર્ણાશક્તિ'} • સત્તાવાર મંજૂરી બાકી`
+                                      : `${entSummary.product?.name || 'Purnashakti / HCM'} • Pending Official Confirmation`
+                                    : `${lang === 'gu' ? entSummary.product?.nameGu : entSummary.product?.name} (${entSummary.packetWeightLabel || ''}) • ${entSummary.distributedQuantity}/${entSummary.monthlyLimit} ${lang === 'gu' ? 'વપરાયેલ' : 'distributed'} (${entSummary.remainingQuantity} ${lang === 'gu' ? 'બાકી' : 'left'})`}
+                                </p>
+                              )}
                               {b.reviewRemarks && (
                                 <p className="mt-0.5 text-[11px] italic text-[var(--text-secondary)]">
                                   Sevika: {b.reviewRemarks}
@@ -1744,19 +1848,47 @@ export function AwwApp() {
         defaultMode="camera"
       />
 
-      {/* MODAL: Multi-Item Distribution Confirmation */}
+      {/* MODAL: Entitlement-Validated Distribution Confirmation */}
       <ModalDialog
         open={distModalOpen}
         onClose={() => setDistModalOpen(false)}
-        title={lang === 'gu' ? 'પોષણ વિતરણ પુષ્ટિ' : 'Confirm Multi-Item Nutrition Distribution'}
+        title={lang === 'gu' ? 'પાત્રતા ચકાસણી અને વિતરણ' : 'Beneficiary Ration Entitlement'}
         subtitle={verifiedLabel || undefined}
       >
-        {matchedBeneficiary && (
+        {matchedBeneficiary && distEntitlement && (
           <form onSubmit={submitDistribution} className="space-y-4">
+            {/* Verified Beneficiary Identity Card (zero Aadhaar digits) */}
             <div className="rounded-xl border border-emerald-200 bg-[var(--success-subtle)] p-3">
-              <p className="text-xs font-semibold text-[var(--success)]">
-                Verified Local Beneficiary Reference
-              </p>
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs font-semibold text-[var(--success)]">
+                  {lang === 'gu' ? 'ચકાસાયેલ લાભાર્થી' : 'Verified Beneficiary'}
+                </p>
+                <StatusBadge
+                  variant={
+                    distEntitlement.eligibilityStatus === 'ELIGIBLE'
+                      ? 'normal'
+                      : distEntitlement.eligibilityStatus === 'LIMIT_EXHAUSTED'
+                        ? 'critical'
+                        : 'warning'
+                  }
+                >
+                  {distEntitlement.eligibilityStatus === 'ELIGIBLE'
+                    ? lang === 'gu'
+                      ? 'વિતરણ માટે પાત્ર'
+                      : 'Eligible'
+                    : distEntitlement.eligibilityStatus === 'LIMIT_EXHAUSTED'
+                      ? lang === 'gu'
+                        ? 'માસિક મર્યાદા પૂર્ણ'
+                        : 'Limit Exhausted'
+                      : distEntitlement.eligibilityStatus === 'INSUFFICIENT_STOCK'
+                        ? lang === 'gu'
+                          ? 'પૂરતો સ્ટોક નથી'
+                          : 'Insufficient Stock'
+                        : lang === 'gu'
+                          ? 'મંજૂરી બાકી'
+                          : 'Pending Configuration'}
+                </StatusBadge>
+              </div>
               <p className="mt-0.5 text-base font-bold text-[var(--text-primary)]">
                 {lang === 'gu'
                   ? matchedBeneficiary.displayNameGu || matchedBeneficiary.displayName
@@ -1765,138 +1897,185 @@ export function AwwApp() {
               <p className="font-mono-num text-xs text-[var(--text-secondary)]">
                 {matchedBeneficiary.localReference} • YOB {matchedBeneficiary.yob || '—'}
               </p>
+              <p className="mt-1 text-xs font-semibold text-[var(--text-primary)]">
+                {lang === 'gu' ? 'શ્રેણી: ' : 'Category: '}
+                {getCategoryLabel(matchedBeneficiary.beneficiaryCategory)}
+              </p>
             </div>
 
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-[var(--text-primary)]">
-                  {lang === 'gu' ? 'વિતરણ વસ્તુઓ (૧ કે વધુ)' : `Distribution Items (${distItems.length})`}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const unused =
-                      inventory.find(
-                        (p) =>
-                          p.usableStock > 0 && !distItems.some((row) => row.productId === p.productId)
-                      ) || inventory[0];
-                    if (!unused) return;
-                    setDistItems((prev) => [
-                      ...prev,
-                      { rowId: crypto.randomUUID(), productId: unused.productId, batchId: '', quantity: '1' },
-                    ]);
-                  }}
-                  className="k-btn-secondary min-h-[34px] px-2.5 py-1 text-xs"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                  {lang === 'gu' ? 'વધુ વસ્તુ ઉમેરો' : 'Add Another Item'}
-                </button>
+            {/* Auto-Selected Product & Packet Weight */}
+            <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-sunken)]/50 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+                    {lang === 'gu' ? 'આપમેળે પસંદ થયેલ પોષણ' : 'Auto-Assigned Nutrition Product'}
+                  </p>
+                  <p className="text-sm font-bold text-[var(--text-primary)]">
+                    {distEntitlement.product
+                      ? lang === 'gu'
+                        ? distEntitlement.product.nameGu
+                        : distEntitlement.product.name
+                      : lang === 'gu'
+                        ? 'આ શ્રેણી માટે THR પેકેટ લાગુ નથી'
+                        : 'No THR product configured'}
+                  </p>
+                </div>
+                {distEntitlement.packetWeightLabel && (
+                  <span className="rounded-lg border border-[var(--border)] bg-[var(--bg-raised)] px-2.5 py-1 text-xs font-bold">
+                    {distEntitlement.packetWeightLabel} / {lang === 'gu' ? 'પેકેટ' : 'packet'}
+                  </span>
+                )}
               </div>
 
-              {distItems.map((row, idx) => {
-                const rowProd = inventory.find((p) => p.productId === row.productId);
-                return (
-                  <div
-                    key={row.rowId}
-                    className="space-y-2.5 rounded-xl border border-[var(--border)] bg-[var(--bg-sunken)]/50 p-3"
+              <div className="mt-3 grid grid-cols-3 gap-2 text-center">
+                <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-raised)] p-2">
+                  <p className="text-[10px] font-semibold text-[var(--text-muted)]">
+                    {lang === 'gu' ? 'માસિક મર્યાદા' : 'Monthly Limit'}
+                  </p>
+                  <p className="font-mono-num text-sm font-bold text-[var(--text-primary)]">
+                    {distEntitlement.monthlyLimit !== null ? distEntitlement.monthlyLimit : '—'}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-raised)] p-2">
+                  <p className="text-[10px] font-semibold text-[var(--text-muted)]">
+                    {lang === 'gu' ? 'આપેલ જથ્થો' : 'Distributed'}
+                  </p>
+                  <p className="font-mono-num text-sm font-bold text-[var(--text-primary)]">
+                    {distEntitlement.distributedQuantity}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-raised)] p-2">
+                  <p className="text-[10px] font-semibold text-[var(--text-muted)]">
+                    {lang === 'gu' ? 'બાકી હક' : 'Remaining'}
+                  </p>
+                  <p
+                    className={`font-mono-num text-sm font-bold ${
+                      (distEntitlement.remainingQuantity ?? 0) > 0
+                        ? 'text-[var(--success)]'
+                        : 'text-[var(--danger)]'
+                    }`}
                   >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs font-bold text-[var(--text-secondary)]">
-                        Item #{idx + 1}
-                      </span>
-                      {distItems.length > 1 && (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setDistItems((prev) => prev.filter((item) => item.rowId !== row.rowId))
-                          }
-                          className="inline-flex items-center gap-1 text-xs font-semibold text-[var(--danger)]"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" /> Remove
-                        </button>
-                      )}
-                    </div>
+                    {distEntitlement.remainingQuantity !== null
+                      ? distEntitlement.remainingQuantity
+                      : '—'}
+                  </p>
+                </div>
+              </div>
 
-                    <div>
-                      <label className="mb-1 block text-xs font-semibold">Nutrition Product</label>
-                      <select
-                        value={row.productId}
-                        onChange={(e) =>
-                          setDistItems((prev) =>
-                            prev.map((it) =>
-                              it.rowId === row.rowId
-                                ? { ...it, productId: e.target.value, batchId: '' }
-                                : it
+              <div className="mt-2 flex items-center justify-between text-[11px] text-[var(--text-secondary)]">
+                <span>
+                  {lang === 'gu' ? 'મહિનો:' : 'Month:'}{' '}
+                  <strong className="font-mono-num">{distEntitlement.distributionMonth}</strong>
+                </span>
+                {distEntitlement.product && (
+                  <span>
+                    {lang === 'gu' ? 'કેન્દ્ર ઉપલબ્ધ સ્ટોક:' : 'Centre Usable Stock:'}{' '}
+                    <strong className="font-mono-num">
+                      {distEntitlement.usableStock} {distEntitlement.product.unit}
+                    </strong>
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Blocking / Guidance Notice or Quantity Selection */}
+            {distEntitlement.eligibilityStatus === 'LIMIT_EXHAUSTED' && (
+              <div className="rounded-xl border border-rose-200 bg-[var(--danger-subtle)] p-3 text-xs font-medium text-[var(--danger)]">
+                {lang === 'gu'
+                  ? 'આ લાભાર્થીની ચાલુ મહિનાની રેશન મર્યાદા પૂર્ણ થઈ ગઈ છે. આવતા મહિનાની ૧ તારીખે આપમેળે નવી મર્યાદા શરૂ થશે.'
+                  : 'Monthly ration entitlement is exhausted for this calendar month. Distribution will unlock automatically on the 1st of next month.'}
+              </div>
+            )}
+
+            {distEntitlement.eligibilityStatus === 'PENDING_CONFIGURATION' && (
+              <div className="rounded-xl border border-amber-200 bg-[var(--warning-subtle)] p-3 text-xs font-medium text-[var(--warning)]">
+                {lang === 'gu'
+                  ? 'આ શ્રેણી (દા.ત. કિશોરી - પૂર્ણાશક્તિ) માટે સત્તાવાર જથ્થો અને વજન હજુ નિશ્ચિત થયેલ નથી. સુપરવાઈઝર/CDPO મંજૂરી પછી વિતરણ શક્ય બનશે.'
+                  : 'Entitlement quantity and packet weight for this category are pending official confirmation by CDPO/Supervisor. Distribution is blocked.'}
+              </div>
+            )}
+
+            {distEntitlement.eligibilityStatus === 'INSUFFICIENT_STOCK' && (
+              <div className="rounded-xl border border-amber-200 bg-[var(--warning-subtle)] p-3 text-xs font-medium text-[var(--warning)]">
+                {lang === 'gu'
+                  ? 'લાભાર્થી પાત્ર છે પરંતુ કેન્દ્રમાં પૂરતો વપરાશયોગ્ય સ્ટોક નથી. કૃપા કરીને સ્ટોક વિનંતી મોકલો.'
+                  : 'Beneficiary has remaining monthly entitlement, but centre usable stock is 0. Raise a Stock Request first.'}
+              </div>
+            )}
+
+            {distEntitlement.canDistribute && distEntitlement.product && (
+              <div className="space-y-3 rounded-xl border border-[var(--border)] p-3">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div>
+                    <label className="mb-1 block text-xs font-semibold">
+                      {lang === 'gu'
+                        ? `વિતરણ જથ્થો (મહત્તમ ${distEntitlement.maxAllocatable})`
+                        : `Quantity to Distribute (Max ${distEntitlement.maxAllocatable})`}
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setDistQty((prev) => String(Math.max(1, (Number(prev) || 1) - 1)))
+                        }
+                        className="k-btn-secondary min-h-[40px] px-3 text-sm font-bold"
+                        disabled={Number(distQty) <= 1}
+                      >
+                        −
+                      </button>
+                      <input
+                        type="number"
+                        step="1"
+                        min={1}
+                        max={distEntitlement.maxAllocatable}
+                        value={distQty}
+                        onChange={(e) => setDistQty(e.target.value)}
+                        className="k-input text-center font-mono-num"
+                        required
+                      />
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setDistQty((prev) =>
+                            String(
+                              Math.min(distEntitlement.maxAllocatable, (Number(prev) || 1) + 1)
                             )
                           )
                         }
-                        className="k-select text-sm"
-                        required
+                        className="k-btn-secondary min-h-[40px] px-3 text-sm font-bold"
+                        disabled={Number(distQty) >= distEntitlement.maxAllocatable}
                       >
-                        {inventory.map((p) => (
-                          <option key={p.productId} value={p.productId}>
-                            {lang === 'gu' ? p.productNameGu : p.productName} ({p.usableStock} {p.unit} usable)
+                        +
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="mb-1 block text-xs font-semibold">
+                      {lang === 'gu' ? 'બેચ (આપમેળે FEFO)' : 'Batch (Auto FEFO default)'}
+                    </label>
+                    <select
+                      value={distBatchId}
+                      onChange={(e) => setDistBatchId(e.target.value)}
+                      className="k-select text-xs"
+                    >
+                      <option value="">Auto-select FEFO (Earliest Valid)</option>
+                      {(
+                        inventory.find((p) => p.productId === distEntitlement.product?.id)?.batches ??
+                        []
+                      )
+                        .filter((b) => !b.isExpired && b.balance > 0)
+                        .map((b) => (
+                          <option key={b.batchId} value={b.batchId}>
+                            {b.batchNumber} ({b.balance} {distEntitlement.product?.unit} • Exp{' '}
+                            {new Date(b.expiryDate).toLocaleDateString()})
                           </option>
                         ))}
-                      </select>
-                    </div>
-
-                    {rowProd && (
-                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                        <div>
-                          <label className="mb-1 block text-xs font-semibold">
-                            Batch (Auto FEFO default)
-                          </label>
-                          <select
-                            value={row.batchId}
-                            onChange={(e) =>
-                              setDistItems((prev) =>
-                                prev.map((it) =>
-                                  it.rowId === row.rowId ? { ...it, batchId: e.target.value } : it
-                                )
-                              )
-                            }
-                            className="k-select text-xs"
-                          >
-                            <option value="">Auto-select FEFO (Earliest Valid)</option>
-                            {rowProd.batches.map((b) => (
-                              <option key={b.batchId} value={b.batchId}>
-                                {b.batchNumber} ({b.balance} {rowProd.unit}{' '}
-                                {b.isExpired
-                                  ? '- EXPIRED'
-                                  : `Exp ${new Date(b.expiryDate).toLocaleDateString()}`}
-                                )
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-
-                        <div>
-                          <label className="mb-1 block text-xs font-semibold">
-                            Quantity ({rowProd.unit})
-                          </label>
-                          <input
-                            type="number"
-                            step="0.5"
-                            min="0.5"
-                            value={row.quantity}
-                            onChange={(e) =>
-                              setDistItems((prev) =>
-                                prev.map((it) =>
-                                  it.rowId === row.rowId ? { ...it, quantity: e.target.value } : it
-                                )
-                              )
-                            }
-                            className="k-input"
-                            required
-                          />
-                        </div>
-                      </div>
-                    )}
+                    </select>
                   </div>
-                );
-              })}
-            </div>
+                </div>
+              </div>
+            )}
 
             <div className="flex gap-2">
               <button
@@ -1906,7 +2085,17 @@ export function AwwApp() {
               >
                 {t('cancel')}
               </button>
-              <button type="submit" disabled={submitting} className="k-btn-primary flex-1">
+              <button
+                type="submit"
+                disabled={
+                  submitting ||
+                  !distEntitlement.canDistribute ||
+                  !Number.isInteger(Number(distQty)) ||
+                  Number(distQty) < 1 ||
+                  Number(distQty) > distEntitlement.maxAllocatable
+                }
+                className="k-btn-primary flex-1 disabled:cursor-not-allowed disabled:opacity-50"
+              >
                 {submitting ? t('loading') : t('confirm')}
               </button>
             </div>
@@ -2193,11 +2382,11 @@ export function AwwApp() {
                   onChange={(e) => setBenCategory(e.target.value)}
                   className="k-select"
                 >
-                  <option value="PREGNANT_WOMAN">Pregnant Woman (ગર્ભવતી મહિલા)</option>
-                  <option value="LACTATING_MOTHER">Lactating Mother (ધાત્રી માતા)</option>
-                  <option value="CHILD_6M_3Y">Child 6m – 3y (બાળક ૬ માસ-૩ વર્ષ)</option>
-                  <option value="CHILD_3Y_6Y">Child 3y – 6y (બાળક ૩-૬ વર્ષ)</option>
-                  <option value="ADOLESCENT_GIRL">Adolescent Girl (કિશોરી)</option>
+                  {BENEFICIARY_CATEGORY_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label} ({opt.labelGu})
+                    </option>
+                  ))}
                 </select>
               </div>
 

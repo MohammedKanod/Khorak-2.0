@@ -16,8 +16,9 @@ import {
 } from '@prisma/client';
 import { prisma } from '../src/lib/prisma';
 import { refreshAllActiveCentreAlerts } from '../src/services/alert.service';
-import { formatIstDate } from '../src/lib/math';
+import { formatIstDate, formatIstMonth } from '../src/lib/math';
 import { computeHmacCredentialRef, generateCentreSalt } from '../src/lib/credential';
+import { ensureDefaultEntitlementRules } from '../src/services/entitlement.service';
 
 /**
  * Computes centre-salted HMAC-SHA256 protectedCredentialReference matching frontend Aadhaar Offline XML QR parser.
@@ -61,6 +62,7 @@ async function seed() {
   await prisma.stockRequestHistory.deleteMany();
   await prisma.stockRequest.deleteMany();
   await prisma.productBatch.deleteMany();
+  await prisma.entitlementRule.deleteMany();
   await prisma.product.deleteMany();
   await prisma.beneficiaryReference.deleteMany();
   await prisma.refreshToken.deleteMany();
@@ -365,6 +367,9 @@ async function seed() {
     },
   });
 
+  // 7b. Configurable Database-Backed Beneficiary Entitlement Rules
+  await ensureDefaultEntitlementRules(prisma);
+
   // 8. Batches
   const batchBalFresh = await prisma.productBatch.create({
     data: {
@@ -489,6 +494,15 @@ async function seed() {
       syntheticLast4: '9260',
       yob: '2011',
       category: BeneficiaryCategory.ADOLESCENT_GIRL,
+    },
+    {
+      centreId: awcVavdi.id,
+      localReference: 'BEN-GDR01-006',
+      displayName: 'Kavya Hardikbhai Solanki',
+      displayNameGu: 'કાવ્યા હાર્દિકભાઈ સોલંકી',
+      syntheticLast4: '8142',
+      yob: '2024',
+      category: BeneficiaryCategory.SEVERELY_UNDERWEIGHT_CHILD_6M_3Y,
     },
     {
       centreId: awcBamroli.id,
@@ -643,6 +657,7 @@ async function seed() {
       distributedBy: awwVavdi.id,
       distributedAt: yesterday,
       distributionDay: formatIstDate(yesterday),
+      distributionMonth: formatIstMonth(yesterday),
       idempotencyKey: 'seed-dist-yesterday-001',
       remarks: 'Regular THR handout (demo seed)',
     },

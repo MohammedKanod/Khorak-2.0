@@ -102,6 +102,122 @@ export interface ProductInventorySummary {
   batches: BatchBalance[];
 }
 
+export type BeneficiaryCategory =
+  | 'CHILD_6M_3Y'
+  | 'SEVERELY_UNDERWEIGHT_CHILD_6M_3Y'
+  | 'CHILD_3Y_6Y'
+  | 'PREGNANT_WOMAN'
+  | 'LACTATING_MOTHER'
+  | 'ADOLESCENT_GIRL';
+
+export const BENEFICIARY_CATEGORY_OPTIONS: Array<{
+  value: BeneficiaryCategory;
+  label: string;
+  labelGu: string;
+}> = [
+  {
+    value: 'CHILD_6M_3Y',
+    label: 'Child 6 months – 3 years (Normal Weight)',
+    labelGu: 'બાળક ૬ માસ – ૩ વર્ષ (સામાન્ય વજન)',
+  },
+  {
+    value: 'SEVERELY_UNDERWEIGHT_CHILD_6M_3Y',
+    label: 'Severely Underweight Child 6 months – 3 years',
+    labelGu: 'અતિ ઓછા વજનનું બાળક ૬ માસ – ૩ વર્ષ',
+  },
+  {
+    value: 'PREGNANT_WOMAN',
+    label: 'Pregnant Woman',
+    labelGu: 'ગર્ભવતી મહિલા',
+  },
+  {
+    value: 'LACTATING_MOTHER',
+    label: 'Lactating Mother',
+    labelGu: 'ધાત્રી માતા',
+  },
+  {
+    value: 'ADOLESCENT_GIRL',
+    label: 'Adolescent Girl (Kishori)',
+    labelGu: 'કિશોરી (પૂર્ણા)',
+  },
+  {
+    value: 'CHILD_3Y_6Y',
+    label: 'Child 3 – 6 years (HCM)',
+    labelGu: 'બાળક ૩ – ૬ વર્ષ (ગરમ નાસ્તો)',
+  },
+];
+
+export type EligibilityStatus =
+  | 'ELIGIBLE'
+  | 'LIMIT_EXHAUSTED'
+  | 'INSUFFICIENT_STOCK'
+  | 'PENDING_CONFIGURATION'
+  | 'VERIFICATION_REQUIRED';
+
+export interface EntitlementRule {
+  id: string;
+  beneficiaryCategory: string;
+  productId: string | null;
+  monthlyLimit: number | null;
+  packetWeightGrams: number | null;
+  packetWeightLabel: string | null;
+  isConfigured: boolean;
+  isActive: boolean;
+  notes: string | null;
+  updatedAt?: string;
+  product?: {
+    id: string;
+    code: string;
+    name: string;
+    nameGu: string;
+    category: ProductCategory;
+    unit: string;
+  } | null;
+  updater?: { id: string; name: string; role: Role } | null;
+}
+
+export interface MonthlyDistributionLite {
+  id: string;
+  beneficiaryReferenceId: string;
+  productId: string;
+  quantity: number;
+  distributionDay: string;
+  distributionMonth: string;
+  distributedAt: string;
+}
+
+export interface BeneficiaryEntitlementSummary {
+  beneficiary: {
+    id: string;
+    centreId: string;
+    localReference: string;
+    displayName: string;
+    displayNameGu: string | null;
+    yob?: string | null;
+    beneficiaryCategory: string;
+    status?: 'PENDING_APPROVAL' | 'APPROVED' | 'REJECTED';
+  };
+  rule: EntitlementRule | null;
+  product: {
+    id: string;
+    code: string;
+    name: string;
+    nameGu: string;
+    category: ProductCategory;
+    unit: string;
+  } | null;
+  distributionMonth: string;
+  monthlyLimit: number | null;
+  packetWeightGrams: number | null;
+  packetWeightLabel: string | null;
+  distributedQuantity: number;
+  remainingQuantity: number | null;
+  usableStock: number;
+  maxAllocatable: number;
+  eligibilityStatus: EligibilityStatus;
+  canDistribute: boolean;
+}
+
 export interface BeneficiaryReference {
   id: string;
   centreId: string;
