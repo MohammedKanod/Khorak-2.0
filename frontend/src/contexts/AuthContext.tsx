@@ -97,8 +97,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     try {
       const res = await apiRequest<{ success: boolean; data: UserProfile }>('/api/auth/me');
-      setUser(res.data);
-      localStorage.setItem(USER_CACHE_KEY, JSON.stringify(res.data));
+      if (res?.data?.id) {
+        setUser(res.data);
+        localStorage.setItem(USER_CACHE_KEY, JSON.stringify(res.data));
+      }
     } catch (err: unknown) {
       const anyErr = err as { isOffline?: boolean };
       if (!anyErr?.isOffline) {
@@ -123,6 +125,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       skipAuth: true,
       body: JSON.stringify({ username, password }),
     });
+
+    if (!res?.data?.accessToken || !res?.data?.user) {
+      throw new Error('Authentication server returned an unexpected empty response.');
+    }
 
     setStoredTokens(res.data.accessToken, res.data.refreshToken);
     localStorage.setItem(USER_CACHE_KEY, JSON.stringify(res.data.user));

@@ -57,7 +57,11 @@ async function refreshAccessToken(): Promise<string | null> {
         clearStoredTokens();
         return null;
       }
-      const json = await res.json();
+      const json = await res.json().catch(() => null);
+      if (!json?.data?.accessToken || !json?.data?.refreshToken) {
+        clearStoredTokens();
+        return null;
+      }
       setStoredTokens(json.data.accessToken, json.data.refreshToken);
       return json.data.accessToken as string;
     } catch {
@@ -111,6 +115,14 @@ export async function apiRequest<T>(
     const msg = json?.error?.message || `Request failed (${response.status})`;
     const code = json?.error?.code || 'API_ERROR';
     throw new ApiError(msg, response.status, code, false);
+  }
+  if (!json || typeof json !== 'object') {
+    throw new ApiError(
+      'Server returned an invalid or non-JSON response. Please check backend connectivity.',
+      response.status || 502,
+      'INVALID_JSON_RESPONSE',
+      false
+    );
   }
 
   return json as T;
