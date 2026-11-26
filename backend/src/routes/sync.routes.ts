@@ -28,8 +28,9 @@ import {
 } from '../services/ledger.service';
 import { refreshCentreAlerts } from '../services/alert.service';
 import { recordAuditLog } from '../lib/audit';
-import { roundQty } from '../lib/math';
+import { formatIstMonth, roundQty } from '../lib/math';
 import { generateCentreSalt } from '../lib/credential';
+import { ensureDefaultEntitlementRules } from '../services/entitlement.service';
 
 export const syncRouter = Router();
 
@@ -175,6 +176,7 @@ syncRouter.post(
             if (p.items && p.items.length > 0) {
               const exec = await executeMultiDistribution({
                 userId: req.user!.id,
+                userRole: req.user!.role,
                 centreId: targetCentreId,
                 beneficiaryReferenceId: p.beneficiaryReferenceId,
                 items: p.items,
@@ -184,11 +186,12 @@ syncRouter.post(
               });
               resultData = exec.distributions;
             } else {
-              if (!p.productId || !p.quantity) {
-                throw new AppError(400, 'INVALID_PAYLOAD', 'Distribution requires productId and quantity or items');
+              if (!p.quantity) {
+                throw new AppError(400, 'INVALID_PAYLOAD', 'Distribution requires quantity or items');
               }
               const exec = await executeDistribution({
                 userId: req.user!.id,
+                userRole: req.user!.role,
                 centreId: targetCentreId,
                 beneficiaryReferenceId: p.beneficiaryReferenceId,
                 productId: p.productId,
@@ -511,7 +514,7 @@ syncRouter.post(
           });
         } catch (err) {
           const appErr = err instanceof AppError ? err : null;
-          const isConflict = appErr ? [400, 404, 409].includes(appErr.statusCode) : false;
+          const isConflict = appErr ? [400, 403, 404, 409].includes(appErr.statusCode) : false;
           const syncStatus = isConflict ? SyncStatus.CONFLICT : SyncStatus.FAILED;
           const message = err instanceof Error ? err.message : 'Synchronisation failed';
 
@@ -569,7 +572,19 @@ syncRouter.get(
         });
         centre.offlineCredentialSalt = generatedSalt;
       }
-      const [products, inventorySummary, pendingDispatches, beneficiaries, recentDistributions, alerts, stockRequests] =
+      const currentMonth = formatIstMonth();
+      await ensureDefaultEntitlementRules(prisma);
+      const [
+        products,
+        inventorySummary,
+        pendingDispatches,
+        beneficiaries,
+        recentDistributions,
+        monthlyDistributions,
+        entitlementRules,
+        alerts,
+        stockRequests,
+      ] =
         await Promise.all([
           prisma.product.findMany({ where: { isActive: true }, orderBy: { name: 'asc' } }),
           getCentreInventorySummary(centre.id),
@@ -606,6 +621,27 @@ syncRouter.get(
             orderBy: { distributedAt: 'desc' },
             take: 50,
           }),
+          prisma.distribution.findMany({
+            where: { centreId: centre.id, distributionMonth: currentMonth },
+            select: {
+              id: true,
+              beneficiaryReferenceId: true,
+              productId: true,
+              quantity: true,
+              distributionDay: true,
+              distributionMonth: true,
+              distributedAt: true,
+            },
+            orderBy: { distributedAt: 'desc' },
+          }),
+          prisma.entitlementRule.findMany({
+            include: {
+              product: {
+                select: { id: true, code: true, name: true, nameGu: true, unit: true, category: true },
+              },
+            },
+            orderBy: { beneficiaryCategory: 'asc' },
+          }),
           prisma.alert.findMany({
             where: { centreId: centre.id, isResolved: false },
             orderBy: [{ severity: 'desc' }, { createdAt: 'desc' }],
@@ -624,12 +660,15 @@ syncRouter.get(
         success: true,
         data: {
           syncedAt: new Date().toISOString(),
+          currentMonth,
           centre,
           products,
           inventorySummary,
           pendingDispatches,
           beneficiaries,
           recentDistributions,
+          monthlyDistributions,
+          entitlementRules,
           alerts,
           stockRequests,
         },

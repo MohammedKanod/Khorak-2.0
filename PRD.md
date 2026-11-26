@@ -175,11 +175,17 @@ A separate beneficiary application is not required.
 - Allow supervisors to investigate and resolve discrepancies.
 - Require remarks for approvals and adjustments.
 
-### FR-06: Beneficiary Registration, Verification & Multi-Item Distribution
+### FR-06: Beneficiary Registration, Verification & Automatic Entitlement Distribution
 - QR-first beneficiary onboarding: AWW taps **Scan Aadhaar QR**, camera opens directly, local XML parser extracts minimal display name and birth year plus a centre-salted HMAC-SHA256 `protectedCredentialReference`, and shows a confirmation card before submission (with offline queueing and manual registration fallback when QR is unavailable).
 - Strict privacy: zero raw, partial, or last-4 masked Aadhaar digits are ever displayed in UI, logs, notifications, or API payloads, and raw XML never leaves the device.
-- Distribution opens directly on the prominent camera QR scanner; once verified against authorised local records, AWW may add one or more nutrition items (`+ Add Another Item`) in a single atomic checkout.
-- Enforce FEFO allocation, exclude expired/damaged/quarantined stock, validate usable balances with transactional concurrency locks, and prevent same-day duplicate handouts per beneficiary/product.
+- Database-backed monthly ration entitlement rules (`EntitlementRule`):
+  - **Child 6 months–3 years (Normal Weight)** → Balshakti (`7 packets/month`, `500 g`)
+  - **Severely Underweight Child 6 months–3 years** → Balshakti (`10 packets/month`, `500 g`)
+  - **Pregnant Woman** → Matrushakti (`4 packets/month`, `1 kg`)
+  - **Lactating Mother** → Matrushakti (`4 packets/month`, `1 kg`)
+  - **Adolescent Girl (Kishori)** → Purnashakti (`Pending official confirmation` — configurable by authorised Supervisor/CDPO/DPO/DDO; automatic distribution remains blocked until confirmed)
+- Distribution opens directly on the prominent camera QR scanner; once verified against authorised records, KHORAK automatically identifies the beneficiary's category, applicable nutrition product, packet weight, monthly limit, already distributed IST-month quantity, and remaining entitlement (online and offline). Workers cannot select an arbitrary product or exceed remaining monthly limits, limits reset automatically on the 1st of each IST calendar month, and only authorised officials (`SUPERVISOR`/`CDPO`/`DPO`/`DDO`) may execute an audited exception override or update entitlement policy rules.
+- Enforce FEFO allocation, exclude expired/damaged/quarantined stock, validate usable balances with transactional concurrency locks (`pg_advisory_xact_lock`), and prevent same-day duplicate handouts per beneficiary/product.
 
 ### FR-06B: Connected Supervisor Appeals & AWW Stock Requests
 - **Dispatch Appeals**: Supervisors/CDPOs can raise formal shortage/damage appeals linked to discrepancy cases, attach evidence, receive owning-supplier responses, and resolve or escalate through an auditable history trail.

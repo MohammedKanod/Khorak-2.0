@@ -134,12 +134,12 @@ Responsibilities:
 ### 3.5 Distribution Module
 Responsibilities:
 - QR scanning.
-- Beneficiary matching.
-- Product selection.
-- Quantity validation.
-- Stock validation.
-- Distribution confirmation.
-- Duplicate submission prevention.
+- Beneficiary matching (`BeneficiaryReference` status & category verification).
+- Automatic nutrition product resolution via configurable `EntitlementRule`.
+- Monthly IST calendar entitlement calculation & remaining ration limit enforcement.
+- Authorised exception override & policy confirmation controls (`SUPERVISOR`/`CDPO`/`DPO`/`DDO`).
+- Quantity validation & FEFO stock validation.
+- Distribution confirmation & duplicate submission prevention.
 
 ### 3.6 Alert Module
 Responsibilities:
@@ -179,6 +179,7 @@ Use PostgreSQL with Prisma ORM.
 | AnganwadiCentre | Centre records |
 | Supplier | Supplier records |
 | BeneficiaryReference | Minimal authorised beneficiary mapping |
+| EntitlementRule | Configurable monthly ration rules by beneficiary category |
 | Product | Nutrition product catalogue |
 | ProductBatch | Batch and expiry information |
 | Dispatch | Supplier dispatch header |
@@ -283,11 +284,14 @@ Use REST APIs with consistent response structures.
 - POST /api/dispatches/:id/receipt
 - GET /api/dispatches/:id/discrepancies
 
-### 5.4 Distribution
-- POST /api/distributions
+### 5.4 Distribution & Entitlement Rules
+- GET /api/entitlements
+- GET /api/entitlements/beneficiary/:beneficiaryId
+- PUT /api/entitlements/:category (requires `SUPERVISOR`, `CDPO`, `DPO`, or `DDO` + audit `reason`)
+- POST /api/distributions (auto-resolves entitled product, enforces monthly IST calendar limits with advisory locking)
 - GET /api/distributions
 - GET /api/distributions/:id
-- POST /api/beneficiaries/verify-offline-credential
+- POST /api/beneficiaries/verify-offline-credential (returns beneficiary + monthly `entitlement` summary)
 
 ### 5.5 Discrepancies & Approvals
 - GET /api/discrepancies

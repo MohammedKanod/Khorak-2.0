@@ -1,9 +1,13 @@
 import Dexie, { Table } from 'dexie';
 import {
   AlertItem,
+  BeneficiaryEntitlementSummary,
   BeneficiaryReference,
   DispatchRecord,
   DistributionRecord,
+  EligibilityStatus,
+  EntitlementRule,
+  MonthlyDistributionLite,
   OutboxStatus,
   Product,
   ProductInventorySummary,
@@ -37,14 +41,173 @@ export interface OutboxRecord {
 export interface CachedCentreSnapshot {
   centreId: string;
   syncedAt: string;
+  currentMonth?: string;
   offlineCredentialSalt?: string | null;
   products: Product[];
   inventorySummary: ProductInventorySummary[];
   pendingDispatches: DispatchRecord[];
   beneficiaries: BeneficiaryReference[];
   recentDistributions: DistributionRecord[];
+  monthlyDistributions?: MonthlyDistributionLite[];
+  entitlementRules?: EntitlementRule[];
   alerts: AlertItem[];
   stockRequests?: StockRequest[];
+}
+
+export function formatIstMonth(date: Date = new Date()): string {
+  const istMs = date.getTime() + 5.5 * 60 * 60 * 1000;
+  return new Date(istMs).toISOString().slice(0, 7);
+}
+
+function roundQty(val: number): number {
+  return Math.round(val * 100) / 100;
+}
+
+export function computeOfflineEntitlementSummary(params: {
+  beneficiary: BeneficiaryReference;
+  entitlementRules: EntitlementRule[];
+  monthlyDistributions: MonthlyDistributionLite[];
+  inventorySummary: ProductInventorySummary[];
+  outbox: OutboxRecord[];
+  products?: Product[];
+  distributionMonth?: string;
+}): BeneficiaryEntitlementSummary {
+  const distributionMonth = params.distributionMonth ?? formatIstMonth();
+  const rule =
+    params.entitlementRules.find(
+      (r) => r.beneficiaryCategory === params.beneficiary.beneficiaryCategory
+    ) ?? null;
+
+  const invEntry = rule?.productId
+    ? params.inventorySummary.find((p) => p.productId === rule.productId)
+    : undefined;
+  const catalogProduct = rule?.productId
+    ? params.products?.find((p) => p.id === rule.productId) ?? null
+    : null;
+  const invProduct = invEntry
+    ? {
+        id: invEntry.productId,
+        code: '',
+        name: invEntry.productName,
+        nameGu: invEntry.productNameGu,
+        category: invEntry.category,
+        unit: invEntry.unit,
+      }
+    : null;
+  const prodMeta = rule?.product ?? catalogProduct ?? invProduct;
+
+  let serverDistributed = 0;
+  if (rule?.productId) {
+    for (const d of params.monthlyDistributions) {
+      if (
+        d.beneficiaryReferenceId === params.beneficiary.id &&
+        d.productId === rule.productId &&
+        d.distributionMonth === distributionMonth
+      ) {
+        serverDistributed += Number(d.quantity) || 0;
+      }
+    }
+  }
+
+  // Also include unsynced local outbox DISTRIBUTION entries in the current IST month
+  // and subtract queued outbox distribution quantities from locally usable stock.
+  let pendingDistributedForBeneficiary = 0;
+  let pendingStockDeductionForProduct = 0;
+  if (rule?.productId) {
+    for (const op of params.outbox) {
+      if (
+        op.operationType !== 'DISTRIBUTION' ||
+        op.status === 'synced' ||
+        op.status === 'conflict'
+      ) {
+        continue;
+      }
+      const payload = op.payload as {
+        beneficiaryReferenceId?: string;
+        productId?: string;
+        quantity?: number;
+        items?: Array<{ productId?: string; quantity?: number }>;
+      };
+      const items: Array<{ productId?: string; quantity?: number }> = Array.isArray(payload.items)
+        ? payload.items
+        : payload.productId
+          ? [{ productId: payload.productId, quantity: payload.quantity }]
+          : [];
+      const opMonth = formatIstMonth(new Date(op.createdAt));
+
+      for (const item of items) {
+        const pid: string = item.productId || rule.productId;
+        const qty = Number(item.quantity) || 0;
+        if (qty <= 0 || pid !== rule.productId) continue;
+        pendingStockDeductionForProduct += qty;
+        if (
+          payload.beneficiaryReferenceId === params.beneficiary.id &&
+          opMonth === distributionMonth
+        ) {
+          pendingDistributedForBeneficiary += qty;
+        }
+      }
+    }
+  }
+
+  const distributedQuantity = roundQty(serverDistributed + pendingDistributedForBeneficiary);
+  const usableStock = Math.max(
+    0,
+    roundQty((invEntry?.usableStock ?? 0) - pendingStockDeductionForProduct)
+  );
+  const monthlyLimit =
+    rule?.isConfigured && rule.monthlyLimit !== null ? roundQty(rule.monthlyLimit) : null;
+  const remainingQuantity =
+    monthlyLimit !== null ? Math.max(0, roundQty(monthlyLimit - distributedQuantity)) : null;
+
+  let eligibilityStatus: EligibilityStatus;
+  if (params.beneficiary.status && params.beneficiary.status !== 'APPROVED') {
+    eligibilityStatus = 'VERIFICATION_REQUIRED';
+  } else if (
+    !rule ||
+    !rule.isActive ||
+    !rule.isConfigured ||
+    !rule.productId ||
+    monthlyLimit === null
+  ) {
+    eligibilityStatus = 'PENDING_CONFIGURATION';
+  } else if (remainingQuantity !== null && remainingQuantity <= 0) {
+    eligibilityStatus = 'LIMIT_EXHAUSTED';
+  } else if (usableStock <= 0) {
+    eligibilityStatus = 'INSUFFICIENT_STOCK';
+  } else {
+    eligibilityStatus = 'ELIGIBLE';
+  }
+
+  const maxAllocatable =
+    eligibilityStatus === 'ELIGIBLE' && remainingQuantity !== null
+      ? Math.max(0, Math.floor(Math.min(remainingQuantity, usableStock)))
+      : 0;
+
+  return {
+    beneficiary: {
+      id: params.beneficiary.id,
+      centreId: params.beneficiary.centreId,
+      localReference: params.beneficiary.localReference,
+      displayName: params.beneficiary.displayName,
+      displayNameGu: params.beneficiary.displayNameGu,
+      yob: params.beneficiary.yob,
+      beneficiaryCategory: params.beneficiary.beneficiaryCategory,
+      status: params.beneficiary.status,
+    },
+    rule,
+    product: prodMeta,
+    distributionMonth,
+    monthlyLimit,
+    packetWeightGrams: rule?.packetWeightGrams ?? null,
+    packetWeightLabel: rule?.packetWeightLabel ?? null,
+    distributedQuantity,
+    remainingQuantity,
+    usableStock,
+    maxAllocatable,
+    eligibilityStatus,
+    canDistribute: eligibilityStatus === 'ELIGIBLE',
+  };
 }
 
 class KhorakOfflineDatabase extends Dexie {
@@ -93,12 +256,15 @@ export async function pullCentreSnapshot(centreId: string): Promise<CachedCentre
     const snapshot: CachedCentreSnapshot = {
       centreId,
       syncedAt: res.data.syncedAt,
+      currentMonth: res.data.currentMonth,
       offlineCredentialSalt: res.data.centre?.offlineCredentialSalt ?? null,
       products: res.data.products,
       inventorySummary: res.data.inventorySummary,
       pendingDispatches: res.data.pendingDispatches,
       beneficiaries: res.data.beneficiaries,
       recentDistributions: res.data.recentDistributions,
+      monthlyDistributions: res.data.monthlyDistributions ?? [],
+      entitlementRules: res.data.entitlementRules ?? [],
       alerts: res.data.alerts,
       stockRequests: res.data.stockRequests ?? [],
     };

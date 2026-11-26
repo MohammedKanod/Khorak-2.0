@@ -9,6 +9,7 @@ import {
   requireRoles,
 } from '../middleware/auth';
 import { getCentreInventorySummary } from '../services/ledger.service';
+import { ensureDefaultEntitlementRules } from '../services/entitlement.service';
 import { roundQty } from '../lib/math';
 
 export const analyticsRouter = Router();
@@ -519,6 +520,7 @@ analyticsRouter.get(
     try {
       const scopeWhere = buildCentreScopeWhere(req.user!);
       const isDistrictLevel = req.user!.role === Role.DPO || req.user!.role === Role.DDO;
+      await ensureDefaultEntitlementRules(prisma);
 
       const [
         baseMetrics,
@@ -531,6 +533,7 @@ analyticsRouter.get(
         beneficiaries,
         appeals,
         stockRequests,
+        entitlementRules,
         nutritionRows,
       ] = await Promise.all([
         computeAggregatedMetrics(scopeWhere),
@@ -722,6 +725,13 @@ analyticsRouter.get(
           orderBy: { createdAt: 'desc' },
           take: 150,
         }),
+        prisma.entitlementRule.findMany({
+          include: {
+            product: { select: { id: true, code: true, name: true, nameGu: true, unit: true, category: true } },
+            updater: { select: { id: true, name: true, role: true } },
+          },
+          orderBy: { beneficiaryCategory: 'asc' },
+        }),
         isDistrictLevel
           ? prisma.nutritionAggregate.findMany({
               where: req.user!.districtId
@@ -833,6 +843,7 @@ analyticsRouter.get(
           beneficiaries,
           appeals,
           stockRequests,
+          entitlementRules,
         },
       });
     } catch (err) {

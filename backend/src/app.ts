@@ -13,6 +13,7 @@ import { analyticsRouter } from './routes/analytics.routes';
 import { syncRouter } from './routes/sync.routes';
 import { appealsRouter } from './routes/appeals.routes';
 import { stockRequestsRouter } from './routes/stockRequests.routes';
+import { entitlementsRouter } from './routes/entitlements.routes';
 import { prisma } from './lib/prisma';
 import { ensureProductionSchema } from './lib/ensureSchema';
 
@@ -98,6 +99,7 @@ export function createApp() {
   app.use('/api/approvals', approvalRouter);
   app.use('/api/distributions', distributionRouter);
   app.use('/api/beneficiaries', beneficiaryRouter);
+  app.use('/api/entitlements', entitlementsRouter);
   app.use('/api/appeals', appealsRouter);
   app.use('/api/stock-requests', stockRequestsRouter);
   app.use('/api/sync', syncRouter);

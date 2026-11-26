@@ -14,6 +14,7 @@ import {
   PackagePlus,
   Search,
   Send,
+  SlidersHorizontal,
   TrendingUp,
   Truck,
   UserCheck,
@@ -35,10 +36,12 @@ import { useI18n } from '../../locales/translations';
 import { apiRequest, apiUrl } from '../../lib/api';
 import {
   AlertItem,
+  BENEFICIARY_CATEGORY_OPTIONS,
   BeneficiaryReference,
   DiscrepancyCase,
   DispatchAppeal,
   DispatchRecord,
+  EntitlementRule,
   ProductInventorySummary,
   ReconciliationRecord,
   SpoilageRecord,
@@ -60,6 +63,7 @@ type AdminTab =
   | 'discrepancies'
   | 'reconciliation'
   | 'beneficiaries'
+  | 'entitlements'
   | 'expiry'
   | 'alerts'
   | 'suppliers'
@@ -197,6 +201,7 @@ export function AdminPortal() {
           beneficiaries: BeneficiaryReference[];
           appeals?: DispatchAppeal[];
           stockRequests?: StockRequest[];
+          entitlementRules?: EntitlementRule[];
         };
       }>('/api/dashboard/admin-bundle');
 
@@ -212,6 +217,7 @@ export function AdminPortal() {
       setBeneficiaries(bundle.beneficiaries);
       setAppeals(bundle.appeals || []);
       setStockRequests(bundle.stockRequests || []);
+      setEntitlementRules(bundle.entitlementRules || []);
 
       if (bundle.metrics.centres.length > 0 && !reconCentreId) {
         const firstC = bundle.metrics.centres[0];
@@ -238,6 +244,16 @@ export function AdminPortal() {
 
   const [appeals, setAppeals] = useState<DispatchAppeal[]>([]);
   const [stockRequests, setStockRequests] = useState<StockRequest[]>([]);
+  const [entitlementRules, setEntitlementRules] = useState<EntitlementRule[]>([]);
+  const [editRuleTarget, setEditRuleTarget] = useState<EntitlementRule | null>(null);
+  const [ruleProductId, setRuleProductId] = useState('');
+  const [ruleMonthlyLimit, setRuleMonthlyLimit] = useState('');
+  const [ruleWeightGrams, setRuleWeightGrams] = useState('');
+  const [ruleWeightLabel, setRuleWeightLabel] = useState('');
+  const [ruleIsConfigured, setRuleIsConfigured] = useState(true);
+  const [ruleIsActive, setRuleIsActive] = useState(true);
+  const [ruleNotes, setRuleNotes] = useState('');
+  const [ruleAuditReason, setRuleAuditReason] = useState('');
   const [createAppealDisc, setCreateAppealDisc] = useState<DiscrepancyCase | null>(null);
   const [appealRemarksInput, setAppealRemarksInput] = useState('');
   const [appealFile, setAppealFile] = useState<File | null>(null);
@@ -287,6 +303,45 @@ export function AdminPortal() {
       setBanner({ type: 'success', text: `Appeal ${reviewAppealTarget.appealReference} updated (${appealDecision}).` });
     } catch (err) {
       setBanner({ type: 'error', text: err instanceof Error ? err.message : 'Appeal review failed' });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function submitEntitlementRuleUpdate(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editRuleTarget) return;
+    setSubmitting(true);
+    try {
+      const parsedLimit =
+        ruleIsConfigured && ruleMonthlyLimit.trim() !== '' ? Number(ruleMonthlyLimit) : null;
+      const parsedGrams =
+        ruleIsConfigured && ruleWeightGrams.trim() !== '' ? Number(ruleWeightGrams) : null;
+      await apiRequest(`/api/entitlements/${encodeURIComponent(editRuleTarget.beneficiaryCategory)}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          productId: ruleProductId || null,
+          monthlyLimit: parsedLimit,
+          packetWeightGrams: parsedGrams,
+          packetWeightLabel: ruleIsConfigured && ruleWeightLabel.trim() ? ruleWeightLabel.trim() : null,
+          isConfigured: ruleIsConfigured,
+          isActive: ruleIsActive,
+          notes: ruleNotes.trim() || undefined,
+          reason: ruleAuditReason.trim(),
+        }),
+      });
+      setEditRuleTarget(null);
+      setRuleAuditReason('');
+      await loadDashboard();
+      setBanner({
+        type: 'success',
+        text: `Entitlement policy updated for ${editRuleTarget.beneficiaryCategory}.`,
+      });
+    } catch (err) {
+      setBanner({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Unable to update entitlement rule',
+      });
     } finally {
       setSubmitting(false);
     }
@@ -451,6 +506,7 @@ export function AdminPortal() {
           { id: 'inventory', label: t('navInventory'), icon: Package },
           { id: 'stockRequests', label: 'Stock Requests', icon: PackagePlus },
           { id: 'beneficiaries', label: 'Beneficiary Approvals', icon: UserCheck },
+          { id: 'entitlements', label: 'Entitlement Rules', icon: SlidersHorizontal },
           { id: 'discrepancies', label: t('navDiscrepancies'), icon: FileWarning },
           { id: 'reconciliation', label: t('navReconciliation'), icon: ClipboardCheck },
           { id: 'expiry', label: t('navExpiry'), icon: Clock },
@@ -461,6 +517,7 @@ export function AdminPortal() {
             { id: 'centres', label: 'Centres', icon: Building2 },
             { id: 'stockRequests', label: 'Stock Requests', icon: PackagePlus },
             { id: 'beneficiaries', label: 'Beneficiaries', icon: UserCheck },
+            { id: 'entitlements', label: 'Entitlement Rules', icon: SlidersHorizontal },
             { id: 'alerts', label: t('navAlerts'), icon: AlertTriangle },
             { id: 'suppliers', label: 'Suppliers', icon: Truck },
             { id: 'deliveries', label: 'Deliveries', icon: Package },
@@ -479,6 +536,7 @@ export function AdminPortal() {
                 { id: 'centres', label: 'Block Comparison', icon: Building2 },
                 { id: 'inventory', label: t('navInventory'), icon: Package },
                 { id: 'stockRequests', label: 'Stock Requests', icon: PackagePlus },
+                { id: 'entitlements', label: 'Entitlement Rules', icon: SlidersHorizontal },
                 { id: 'alerts', label: 'Stockout Reports', icon: AlertTriangle },
                 { id: 'expiry', label: 'Expiry Reports', icon: Clock },
                 { id: 'reports', label: t('navReports'), icon: Download },
@@ -489,6 +547,7 @@ export function AdminPortal() {
                 { id: 'centres', label: 'Block Performance', icon: Building2 },
                 { id: 'inventory', label: 'Inventory Trends', icon: Package },
                 { id: 'stockRequests', label: 'Stock Requests', icon: PackagePlus },
+                { id: 'entitlements', label: 'Entitlement Rules', icon: SlidersHorizontal },
                 { id: 'malnutrition', label: 'Malnutrition Trends', icon: TrendingUp },
                 { id: 'discrepancies', label: t('navDiscrepancies'), icon: FileWarning },
                 { id: 'reports', label: t('navReports'), icon: Download },
@@ -1363,6 +1422,114 @@ export function AdminPortal() {
                 </div>
               )}
 
+              {/* MONTHLY ENTITLEMENT RULES */}
+              {tab === 'entitlements' && (
+                <div className="k-card p-5">
+                  <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h2 className="text-base font-bold">
+                        Beneficiary Monthly Nutrition Entitlement Rules ({entitlementRules.length})
+                      </h2>
+                      <p className="text-xs text-[var(--text-secondary)]">
+                        Automatic product selection & monthly packet ceilings reset every calendar month. Pending categories (such as Kishori Purnashakti) remain blocked until confirmed here.
+                      </p>
+                    </div>
+                  </div>
+
+                  {entitlementRules.length === 0 ? (
+                    <EmptyState
+                      title="No entitlement rules loaded"
+                      description="Refresh dashboard to load configured ICDS nutrition entitlement rules."
+                    />
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-sm">
+                        <thead>
+                          <tr className="border-b border-[var(--border)] text-xs text-[var(--text-muted)]">
+                            <th className="py-2 pr-3">Beneficiary Category</th>
+                            <th className="py-2 pr-3">Product</th>
+                            <th className="py-2 pr-3">Monthly Limit</th>
+                            <th className="py-2 pr-3">Packet Weight</th>
+                            <th className="py-2 pr-3">Status</th>
+                            <th className="py-2 pr-3">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {entitlementRules.map((rule) => {
+                            const catMeta = BENEFICIARY_CATEGORY_OPTIONS.find(
+                              (opt) => opt.value === rule.beneficiaryCategory
+                            );
+                            return (
+                              <tr key={rule.id} className="border-b border-[var(--border)]">
+                                <td className="py-3 pr-3">
+                                  <p className="font-semibold">
+                                    {catMeta?.label || rule.beneficiaryCategory}
+                                  </p>
+                                  {rule.notes && (
+                                    <p className="text-[11px] text-[var(--text-muted)]">{rule.notes}</p>
+                                  )}
+                                </td>
+                                <td className="py-3 pr-3">
+                                  {rule.product ? (
+                                    <span className="font-medium">
+                                      {lang === 'gu' ? rule.product.nameGu : rule.product.name}
+                                    </span>
+                                  ) : (
+                                    <span className="text-xs text-[var(--text-muted)]">Not Assigned</span>
+                                  )}
+                                </td>
+                                <td className="font-mono-num py-3 pr-3 font-bold">
+                                  {rule.isConfigured && rule.monthlyLimit !== null
+                                    ? `${rule.monthlyLimit} ${rule.product?.unit || 'packets'}`
+                                    : 'Pending'}
+                                </td>
+                                <td className="font-mono-num py-3 pr-3 text-xs">
+                                  {rule.packetWeightLabel || 'Configurable'}
+                                </td>
+                                <td className="py-3 pr-3">
+                                  {!rule.isActive ? (
+                                    <StatusBadge variant="neutral">Inactive / HCM</StatusBadge>
+                                  ) : rule.isConfigured ? (
+                                    <StatusBadge variant="normal">Configured</StatusBadge>
+                                  ) : (
+                                    <StatusBadge variant="warning">Pending Confirmation</StatusBadge>
+                                  )}
+                                </td>
+                                <td className="py-3 pr-3">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setEditRuleTarget(rule);
+                                      setRuleProductId(rule.productId || '');
+                                      setRuleMonthlyLimit(
+                                        rule.monthlyLimit !== null ? String(rule.monthlyLimit) : ''
+                                      );
+                                      setRuleWeightGrams(
+                                        rule.packetWeightGrams !== null
+                                          ? String(rule.packetWeightGrams)
+                                          : ''
+                                      );
+                                      setRuleWeightLabel(rule.packetWeightLabel || '');
+                                      setRuleIsConfigured(rule.isConfigured);
+                                      setRuleIsActive(rule.isActive);
+                                      setRuleNotes(rule.notes || '');
+                                      setRuleAuditReason('');
+                                    }}
+                                    className="k-btn-secondary min-h-[34px] px-3 py-1 text-xs"
+                                  >
+                                    {rule.isConfigured ? 'Update Rule' : 'Confirm Policy'}
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* EXPIRY MONITORING */}
               {tab === 'expiry' && (
                 <div className="k-card overflow-x-auto p-5">
@@ -1975,6 +2142,165 @@ export function AdminPortal() {
             </button>
           </div>
         </form>
+      </ModalDialog>
+
+      {/* Edit / Confirm Entitlement Rule Modal */}
+      <ModalDialog
+        open={Boolean(editRuleTarget)}
+        onClose={() => setEditRuleTarget(null)}
+        title="Configure Beneficiary Entitlement Rule"
+        subtitle={
+          editRuleTarget
+            ? BENEFICIARY_CATEGORY_OPTIONS.find(
+                (o) => o.value === editRuleTarget.beneficiaryCategory
+              )?.label || editRuleTarget.beneficiaryCategory
+            : undefined
+        }
+      >
+        {editRuleTarget && (
+          <form onSubmit={submitEntitlementRuleUpdate} className="space-y-4">
+            <div className="flex flex-wrap gap-4">
+              <label className="flex items-center gap-2 text-xs font-semibold">
+                <input
+                  type="checkbox"
+                  checked={ruleIsActive}
+                  onChange={(e) => setRuleIsActive(e.target.checked)}
+                />
+                Rule Active for Ration Allocation
+              </label>
+              <label className="flex items-center gap-2 text-xs font-semibold">
+                <input
+                  type="checkbox"
+                  checked={ruleIsConfigured}
+                  onChange={(e) => setRuleIsConfigured(e.target.checked)}
+                />
+                Officially Confirmed & Enabled
+              </label>
+            </div>
+
+            <div>
+              <label className="mb-1 block text-xs font-semibold">Assigned Product</label>
+              <select
+                value={ruleProductId}
+                onChange={(e) => setRuleProductId(e.target.value)}
+                className="k-select"
+              >
+                <option value="">No Product Assigned</option>
+                {Array.from(
+                  new Map(
+                    [
+                      ...(metrics?.centres.flatMap((c) =>
+                        c.products.map((p) => ({
+                          id: p.productId,
+                          name: p.productName,
+                          unit: p.unit,
+                        }))
+                      ) ?? []),
+                      ...entitlementRules
+                        .filter((r) => r.product)
+                        .map((r) => ({
+                          id: r.product!.id,
+                          name: r.product!.name,
+                          unit: r.product!.unit,
+                        })),
+                    ].map((p) => [p.id, p])
+                  ).values()
+                ).map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} ({p.unit})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {ruleIsConfigured && (
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <div>
+                  <label className="mb-1 block text-xs font-semibold">Monthly Limit (packets)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={ruleMonthlyLimit}
+                    onChange={(e) => setRuleMonthlyLimit(e.target.value)}
+                    className="k-input"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-semibold">Packet Weight (g)</label>
+                  <input
+                    type="number"
+                    min="50"
+                    step="50"
+                    value={ruleWeightGrams}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setRuleWeightGrams(val);
+                      const num = Number(val);
+                      if (Number.isFinite(num) && num > 0) {
+                        setRuleWeightLabel(num >= 1000 ? `${num / 1000} kg` : `${num} g`);
+                      }
+                    }}
+                    className="k-input"
+                    placeholder="500 or 1000"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-semibold">Weight Label</label>
+                  <input
+                    type="text"
+                    value={ruleWeightLabel}
+                    onChange={(e) => setRuleWeightLabel(e.target.value)}
+                    className="k-input"
+                    placeholder="500 g or 1 kg"
+                    required
+                  />
+                </div>
+              </div>
+            )}
+
+            <div>
+              <label className="mb-1 block text-xs font-semibold">Policy Notes</label>
+              <input
+                type="text"
+                value={ruleNotes}
+                onChange={(e) => setRuleNotes(e.target.value)}
+                className="k-input"
+                placeholder="Official ICDS circular / ration entitlement note"
+              />
+            </div>
+
+            <div>
+              <label className="mb-1 block text-xs font-semibold">
+                Official Justification (Audit Log Required)
+              </label>
+              <textarea
+                rows={3}
+                value={ruleAuditReason}
+                onChange={(e) => setRuleAuditReason(e.target.value)}
+                className="k-textarea"
+                required
+                minLength={5}
+                placeholder="Enter Government Resolution / ICDS order reference authorizing change..."
+              />
+            </div>
+
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setEditRuleTarget(null)}
+                className="k-btn-secondary flex-1"
+              >
+                {t('cancel')}
+              </button>
+              <button type="submit" disabled={submitting} className="k-btn-primary flex-1">
+                {submitting ? t('loading') : 'Save Entitlement Rule'}
+              </button>
+            </div>
+          </form>
+        )}
       </ModalDialog>
     </div>
   );

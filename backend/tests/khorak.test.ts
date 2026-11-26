@@ -131,7 +131,7 @@ describe('KHORAK Acceptance & Supply Chain Integrity Tests', () => {
     expect(reviewRes.body.data.status).toBe('RESOLVED');
   });
 
-  it('Test B & C: Verify synthetic Aadhaar Offline XML QR credential (HMAC-SHA256), record distribution, and block duplicate submission', async () => {
+  it('Test B & C: Verify synthetic Aadhaar Offline XML QR credential (HMAC-SHA256), auto-resolve entitlement, record distribution, and block duplicates', async () => {
     // 1. Verify offline credential HMAC hash locally derived from Poojaben's synthetic Aadhaar XML + centre salt
     const hash = computeHmacCredentialRef({
       salt: vavdiSalt,
@@ -146,26 +146,31 @@ describe('KHORAK Acceptance & Supply Chain Integrity Tests', () => {
 
     expect(verifyRes.status).toBe(200);
     expect(verifyRes.body.data.beneficiary.id).toBe(beneficiaryPoojaId);
+    expect(verifyRes.body.data.entitlement.product.id).toBe(matruShaktiId);
+    expect(verifyRes.body.data.entitlement.monthlyLimit).toBe(4);
+    expect(verifyRes.body.data.entitlement.remainingQuantity).toBe(4);
+    expect(verifyRes.body.data.entitlement.eligibilityStatus).toBe('ELIGIBLE');
     expect(JSON.stringify(verifyRes.body)).not.toContain('4821');
     expect(JSON.stringify(verifyRes.body)).not.toContain('maskedIdLast4');
 
     const beforeInv = await request(app)
       .get(`/api/inventory/${vavdiCentreId}`)
       .set('Authorization', `Bearer ${awwToken}`);
-    const beforeBal = beforeInv.body.data.products.find((p: { productId: string }) => p.productId === balShaktiId).usableStock;
+    const beforeMat = beforeInv.body.data.products.find((p: { productId: string }) => p.productId === matruShaktiId).usableStock;
 
+    // Product auto-resolved by backend when omitted (Pregnant Woman -> Matru Shakti)
     const idempKey = `test-bc-dist-${Date.now()}`;
     const dist1 = await request(app)
       .post('/api/distributions')
       .set('Authorization', `Bearer ${awwToken}`)
       .send({
         beneficiaryReferenceId: beneficiaryPoojaId,
-        productId: balShaktiId,
         quantity: 2,
         idempotencyKey: idempKey,
       });
 
     expect(dist1.status).toBe(201);
+    expect(dist1.body.data.productId).toBe(matruShaktiId);
 
     // Retry with same idempotencyKey -> deduplicated, no second deduction
     const distRetry = await request(app)
@@ -173,7 +178,6 @@ describe('KHORAK Acceptance & Supply Chain Integrity Tests', () => {
       .set('Authorization', `Bearer ${awwToken}`)
       .send({
         beneficiaryReferenceId: beneficiaryPoojaId,
-        productId: balShaktiId,
         quantity: 2,
         idempotencyKey: idempKey,
       });
@@ -187,7 +191,6 @@ describe('KHORAK Acceptance & Supply Chain Integrity Tests', () => {
       .set('Authorization', `Bearer ${awwToken}`)
       .send({
         beneficiaryReferenceId: beneficiaryPoojaId,
-        productId: balShaktiId,
         quantity: 2,
         idempotencyKey: `test-bc-dup-${Date.now()}`,
       });
@@ -197,9 +200,9 @@ describe('KHORAK Acceptance & Supply Chain Integrity Tests', () => {
     const afterInv = await request(app)
       .get(`/api/inventory/${vavdiCentreId}`)
       .set('Authorization', `Bearer ${awwToken}`);
-    const afterBal = afterInv.body.data.products.find((p: { productId: string }) => p.productId === balShaktiId).usableStock;
+    const afterMat = afterInv.body.data.products.find((p: { productId: string }) => p.productId === matruShaktiId).usableStock;
 
-    expect(afterBal).toBe(beforeBal - 2);
+    expect(afterMat).toBe(beforeMat - 2);
   });
 
   it('Test D: 40 units at 8 units daily consumption generates 5-day REORDER_WARNING', () => {
@@ -214,15 +217,15 @@ describe('KHORAK Acceptance & Supply Chain Integrity Tests', () => {
   });
 
   it('Test E: Prevent distribution from an expired batch', async () => {
-    const kajalBen = await prisma.beneficiaryReference.findFirstOrThrow({
-      where: { centreId: vavdiCentreId, localReference: 'BEN-GDR01-003' },
+    const kavyaSamBen = await prisma.beneficiaryReference.findFirstOrThrow({
+      where: { centreId: vavdiCentreId, localReference: 'BEN-GDR01-006' },
     });
 
     const res = await request(app)
       .post('/api/distributions')
       .set('Authorization', `Bearer ${awwToken}`)
       .send({
-        beneficiaryReferenceId: kajalBen.id,
+        beneficiaryReferenceId: kavyaSamBen.id,
         productId: balShaktiId,
         batchId: expiredBatchId,
         quantity: 1,
@@ -392,11 +395,11 @@ describe('KHORAK Acceptance & Supply Chain Integrity Tests', () => {
       .set('Authorization', `Bearer ${awwToken}`)
       .send({
         beneficiaryReferenceId: newBenId,
-        productId: balShaktiId,
         quantity: 1,
         idempotencyKey: `test-j-${Date.now()}`,
       });
     expect(distOk.status).toBe(201);
+    expect(distOk.body.data.productId).toBe(matruShaktiId);
   });
 
   it('Admin bundle returns all dashboard datasets in one call and enforces RBAC', async () => {
@@ -434,23 +437,53 @@ describe('KHORAK Acceptance & Supply Chain Integrity Tests', () => {
     }
   });
 
-  it('Multi-item distribution is atomic and concurrent duplicate/stock-limit requests never corrupt ledger', async () => {
+  it('Entitlement Exception Override & Concurrency: Supervisor override is atomic/audited; concurrent requests never exceed stock or daily rules', async () => {
     const ben2 = await prisma.beneficiaryReference.findFirstOrThrow({
       where: { centreId: vavdiCentreId, localReference: 'BEN-GDR01-002' },
     });
     const oil = await prisma.product.findUniqueOrThrow({ where: { code: 'HCM-OIL' } }); // 0 stock at Vavdi
 
+    // 1. Ordinary AWW cannot bypass entitlement rules or supply mismatched product
+    const awwMismatch = await request(app)
+      .post('/api/distributions')
+      .set('Authorization', `Bearer ${awwToken}`)
+      .send({
+        beneficiaryReferenceId: ben2.id,
+        productId: matruShaktiId,
+        quantity: 1,
+        idempotencyKey: `mismatch-${Date.now()}`,
+      });
+    expect(awwMismatch.status).toBe(403);
+    expect(awwMismatch.body.error.code).toBe('ENTITLEMENT_PRODUCT_MISMATCH');
+
+    const awwOverride = await request(app)
+      .post('/api/distributions')
+      .set('Authorization', `Bearer ${awwToken}`)
+      .send({
+        beneficiaryReferenceId: ben2.id,
+        productId: matruShaktiId,
+        quantity: 1,
+        exceptionOverride: true,
+        exceptionReason: 'Attempting unauthorized override',
+        idempotencyKey: `override-aww-${Date.now()}`,
+      });
+    expect(awwOverride.status).toBe(403);
+    expect(awwOverride.body.error.code).toBe('EXCEPTION_FORBIDDEN');
+
+    // 2. Multi-item override where 2nd item (Oil) has 0 stock -> 1st item (Bal Shakti) MUST roll back
     const beforeInv = await request(app)
       .get(`/api/inventory/${vavdiCentreId}`)
       .set('Authorization', `Bearer ${awwToken}`);
     const beforeBal = beforeInv.body.data.products.find((p: { productId: string }) => p.productId === balShaktiId).usableStock;
 
-    // 1. Multi-item where 2nd item (Oil) has 0 stock -> 1st item (Bal Shakti) MUST roll back
     const atomicFail = await request(app)
       .post('/api/distributions')
-      .set('Authorization', `Bearer ${awwToken}`)
+      .set('Authorization', `Bearer ${supervisorToken}`)
       .send({
+        centreId: vavdiCentreId,
         beneficiaryReferenceId: ben2.id,
+        exceptionOverride: true,
+        exceptionReason: 'Supervisor special ration pack test',
         idempotencyKey: `atomic-fail-${Date.now()}`,
         items: [
           { productId: balShaktiId, quantity: 2 },
@@ -460,21 +493,39 @@ describe('KHORAK Acceptance & Supply Chain Integrity Tests', () => {
     expect(atomicFail.status).toBe(400);
     expect(atomicFail.body.error.code).toBe('INSUFFICIENT_STOCK');
 
+    // Authorized Supervisor exception override requires reason and writes audit trail
+    const overrideOk = await request(app)
+      .post('/api/distributions')
+      .set('Authorization', `Bearer ${supervisorToken}`)
+      .send({
+        centreId: vavdiCentreId,
+        beneficiaryReferenceId: ben2.id,
+        productId: matruShaktiId,
+        quantity: 1,
+        exceptionOverride: true,
+        exceptionReason: 'Verified medical nutrition officer special allotment',
+        idempotencyKey: `override-sup-ok-${Date.now()}`,
+      });
+    expect(overrideOk.status).toBe(201);
+    const auditEntry = await prisma.auditLog.findFirst({
+      where: { entityId: overrideOk.body.data.id, action: 'BENEFICIARY_DISTRIBUTION_OVERRIDE' },
+    });
+    expect(auditEntry).toBeTruthy();
+    expect(auditEntry?.remarks).toContain('special allotment');
+
     const midInv = await request(app)
       .get(`/api/inventory/${vavdiCentreId}`)
       .set('Authorization', `Bearer ${awwToken}`);
     const midBal = midInv.body.data.products.find((p: { productId: string }) => p.productId === balShaktiId).usableStock;
     expect(midBal).toBe(beforeBal);
 
-    // 2. Concurrent same-beneficiary, same-product, same-day distributions -> only 1 succeeds (DB unique constraint)
-    const rice = await prisma.product.findUniqueOrThrow({ where: { code: 'HCM-RICE' } });
+    // 3. Concurrent same-beneficiary, same-product, same-day distributions -> only 1 succeeds
     const [r1, r2] = await Promise.all([
       request(app)
         .post('/api/distributions')
         .set('Authorization', `Bearer ${awwToken}`)
         .send({
           beneficiaryReferenceId: ben2.id,
-          productId: rice.id,
           quantity: 1,
           idempotencyKey: `conc-1-${Date.now()}`,
         }),
@@ -483,32 +534,184 @@ describe('KHORAK Acceptance & Supply Chain Integrity Tests', () => {
         .set('Authorization', `Bearer ${awwToken}`)
         .send({
           beneficiaryReferenceId: ben2.id,
-          productId: rice.id,
           quantity: 1,
           idempotencyKey: `conc-2-${Date.now()}`,
         }),
     ]);
     const statuses = [r1.status, r2.status].sort();
     expect(statuses).toEqual([201, 409]);
+  });
 
-    // 3. Valid multi-item distribution succeeds
-    const ben4 = await prisma.beneficiaryReference.findFirstOrThrow({
+  it('Entitlement Rules: Category limits, monthly calendar reset, concurrent monthly lock, Adolescent Girl pending config & offline sync validation', async () => {
+    const cdpoToken = await loginAs('cdpo.godhra');
+    const [rulesRes, pullRes] = await Promise.all([
+      request(app).get('/api/entitlements').set('Authorization', `Bearer ${awwToken}`),
+      request(app).get('/api/sync/pull').set('Authorization', `Bearer ${awwToken}`),
+    ]);
+    expect(rulesRes.status).toBe(200);
+    expect(rulesRes.body.data.length).toBeGreaterThanOrEqual(5);
+    expect(Array.isArray(pullRes.body.data.entitlementRules)).toBe(true);
+    expect(Array.isArray(pullRes.body.data.monthlyDistributions)).toBe(true);
+
+    // Verify all initial rule figures match specification
+    const byCat = new Map(
+      rulesRes.body.data.map((r: { beneficiaryCategory: string; monthlyLimit: number | null; packetWeightGrams: number | null; isConfigured: boolean; product?: { code: string } }) => [
+        r.beneficiaryCategory,
+        r,
+      ])
+    ) as Map<string, { monthlyLimit: number | null; packetWeightGrams: number | null; isConfigured: boolean; product?: { code: string } }>;
+    expect(byCat.get('CHILD_6M_3Y')?.monthlyLimit).toBe(7);
+    expect(byCat.get('CHILD_6M_3Y')?.packetWeightGrams).toBe(500);
+    expect(byCat.get('CHILD_6M_3Y')?.product?.code).toBe('THR-BAL');
+    expect(byCat.get('SEVERELY_UNDERWEIGHT_CHILD_6M_3Y')?.monthlyLimit).toBe(10);
+    expect(byCat.get('SEVERELY_UNDERWEIGHT_CHILD_6M_3Y')?.packetWeightGrams).toBe(500);
+    expect(byCat.get('PREGNANT_WOMAN')?.monthlyLimit).toBe(4);
+    expect(byCat.get('PREGNANT_WOMAN')?.packetWeightGrams).toBe(1000);
+    expect(byCat.get('LACTATING_MOTHER')?.monthlyLimit).toBe(4);
+    expect(byCat.get('ADOLESCENT_GIRL')?.isConfigured).toBe(false);
+    expect(byCat.get('ADOLESCENT_GIRL')?.monthlyLimit).toBeNull();
+
+    // 1. Adolescent Girl (Purnashakti) pending confirmation cannot be allocated automatically
+    const kishoriBen = await prisma.beneficiaryReference.findFirstOrThrow({
       where: { centreId: vavdiCentreId, localReference: 'BEN-GDR01-004' },
     });
-    const multiOk = await request(app)
+    const kishoriSummary = await request(app)
+      .get(`/api/entitlements/beneficiary/${kishoriBen.id}`)
+      .set('Authorization', `Bearer ${awwToken}`);
+    expect(kishoriSummary.status).toBe(200);
+    expect(kishoriSummary.body.data.eligibilityStatus).toBe('PENDING_CONFIGURATION');
+    expect(kishoriSummary.body.data.canDistribute).toBe(false);
+
+    const kishoriBlocked = await request(app)
       .post('/api/distributions')
       .set('Authorization', `Bearer ${awwToken}`)
       .send({
-        beneficiaryReferenceId: ben4.id,
-        idempotencyKey: `multi-ok-${Date.now()}`,
-        items: [
-          { productId: balShaktiId, quantity: 1 },
-          { productId: matruShaktiId, quantity: 1 },
+        beneficiaryReferenceId: kishoriBen.id,
+        quantity: 1,
+        idempotencyKey: `kishori-blk-${Date.now()}`,
+      });
+    expect(kishoriBlocked.status).toBe(400);
+    expect(kishoriBlocked.body.error.code).toBe('ENTITLEMENT_NOT_CONFIGURED');
+
+    // AWW cannot modify entitlement rules (403)
+    const awwCfgDenied = await request(app)
+      .put('/api/entitlements/ADOLESCENT_GIRL')
+      .set('Authorization', `Bearer ${awwToken}`)
+      .send({
+        monthlyLimit: 4,
+        packetWeightGrams: 1000,
+        packetWeightLabel: '1 kg',
+        isConfigured: true,
+        isActive: true,
+        reason: 'Unauthorized change attempt',
+      });
+    expect(awwCfgDenied.status).toBe(403);
+
+    // 2. Concurrent requests across different days in the same month cannot exceed monthly limit
+    // Kavya (SAM child, limit 10): request 6 on 2026-10-10 and concurrently request 5 on 2026-10-11 & 5 on 2026-10-12
+    const kavyaBen = await prisma.beneficiaryReference.findFirstOrThrow({
+      where: { centreId: vavdiCentreId, localReference: 'BEN-GDR01-006' },
+    });
+    const seedOct = await request(app)
+      .post('/api/distributions')
+      .set('Authorization', `Bearer ${awwToken}`)
+      .send({
+        beneficiaryReferenceId: kavyaBen.id,
+        quantity: 6,
+        distributedAt: '2026-10-10T10:00:00+05:30',
+        idempotencyKey: `oct-kavya-6-${Date.now()}`,
+      });
+    expect(seedOct.status).toBe(201);
+
+    const [octConc1, octConc2] = await Promise.all([
+      request(app)
+        .post('/api/distributions')
+        .set('Authorization', `Bearer ${awwToken}`)
+        .send({
+          beneficiaryReferenceId: kavyaBen.id,
+          quantity: 4,
+          distributedAt: '2026-10-11T10:00:00+05:30',
+          idempotencyKey: `oct-kavya-c1-${Date.now()}`,
+        }),
+      request(app)
+        .post('/api/distributions')
+        .set('Authorization', `Bearer ${awwToken}`)
+        .send({
+          beneficiaryReferenceId: kavyaBen.id,
+          quantity: 4,
+          distributedAt: '2026-10-12T10:00:00+05:30',
+          idempotencyKey: `oct-kavya-c2-${Date.now()}`,
+        }),
+    ]);
+    const octStatuses = [octConc1.status, octConc2.status].sort();
+    expect(octStatuses).toEqual([201, 409]);
+
+    // Total distributed in October 2026 must be exactly 10 (never 14)
+    const octCheck = await request(app)
+      .get(`/api/entitlements/beneficiary/${kavyaBen.id}?month=2026-10`)
+      .set('Authorization', `Bearer ${awwToken}`);
+    expect(octCheck.body.data.distributedQuantity).toBe(10);
+    expect(octCheck.body.data.remainingQuantity).toBe(0);
+    expect(octCheck.body.data.eligibilityStatus).toBe('LIMIT_EXHAUSTED');
+
+    // 3. Monthly calendar boundary reset: September vs October vs November
+    // Distributed 10 in 2026-10 does NOT block 2026-12!
+    const decReset = await request(app)
+      .post('/api/distributions')
+      .set('Authorization', `Bearer ${awwToken}`)
+      .send({
+        beneficiaryReferenceId: kavyaBen.id,
+        quantity: 3,
+        distributedAt: '2026-12-01T08:00:00+05:30',
+        idempotencyKey: `dec-reset-${Date.now()}`,
+      });
+    expect(decReset.status).toBe(201);
+
+    // 4. Offline sync push exceeding remaining entitlement -> flagged CONFLICT without allocating
+    const octOverPush = await request(app)
+      .post('/api/sync/push')
+      .set('Authorization', `Bearer ${awwToken}`)
+      .send({
+        operations: [
+          {
+            operationUuid: `sync-over-${Date.now()}`,
+            operationType: 'DISTRIBUTION',
+            createdAt: '2026-10-15T10:00:00+05:30',
+            payload: {
+              beneficiaryReferenceId: kavyaBen.id,
+              quantity: 1,
+              distributedAt: '2026-10-15T10:00:00+05:30',
+            },
+          },
         ],
       });
-    expect(multiOk.status).toBe(201);
-    expect(Array.isArray(multiOk.body.data)).toBe(true);
-    expect(multiOk.body.data).toHaveLength(2);
+    expect(octOverPush.status).toBe(200);
+    expect(octOverPush.body.data.results[0].status).toBe('CONFLICT');
+
+    // 5. CDPO configures Adolescent Girl rule with audit reason -> becomes eligible
+    const confirmKishori = await request(app)
+      .put('/api/entitlements/ADOLESCENT_GIRL')
+      .set('Authorization', `Bearer ${cdpoToken}`)
+      .send({
+        monthlyLimit: 4,
+        packetWeightGrams: 1000,
+        packetWeightLabel: '1 kg',
+        isConfigured: true,
+        isActive: true,
+        reason: 'Confirmed by district ICDS circular for demo test',
+      });
+    expect(confirmKishori.status).toBe(200);
+    expect(confirmKishori.body.data.isConfigured).toBe(true);
+
+    const kishoriAfter = await request(app)
+      .post('/api/distributions')
+      .set('Authorization', `Bearer ${awwToken}`)
+      .send({
+        beneficiaryReferenceId: kishoriBen.id,
+        quantity: 2,
+        idempotencyKey: `kishori-ok-${Date.now()}`,
+      });
+    expect(kishoriAfter.status).toBe(201);
   });
 
   it('Supplier ownership and strict receipt-line validation enforced', async () => {

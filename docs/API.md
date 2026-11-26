@@ -38,18 +38,21 @@
 - `POST /api/stock-requests/:id/review` — Supervisor/CDPO/DPO/DDO (`APPROVE`, `PARTIAL_APPROVE`, `REJECT`). Self-approval blocked; approval authorizes dispatch without altering ledger stock.
 - `POST /api/dispatches` accepts optional `stockRequestId` to link supplier dispatch and advance the request through `DISPATCHED` → `RECEIVED` / `COMPLETED`.
 
-## Beneficiary Offline QR & Multi-Item Distribution
+## Beneficiary Offline QR, Entitlement Rules & Validated Distribution
+- `GET /api/entitlements` — Lists all category-based monthly nutrition `EntitlementRule` records (`CHILD_6M_3Y`, `SEVERELY_UNDERWEIGHT_CHILD_6M_3Y`, `PREGNANT_WOMAN`, `LACTATING_MOTHER`, `ADOLESCENT_GIRL`, `CHILD_3Y_6Y`).
+- `GET /api/entitlements/beneficiary/:beneficiaryId` — Computes current IST calendar month (`YYYY-MM`) entitlement summary (`monthlyLimit`, `distributedQuantity`, `remainingQuantity`, `usableStock`, `maxAllocatable`, `eligibilityStatus`, `canDistribute`).
+- `PUT /api/entitlements/:category` — Restricted to `SUPERVISOR`/`CDPO`/`DPO`/`DDO` with mandatory audit `reason`; configures or updates monthly ration limits and packet weight (e.g. confirming Adolescent Girl / Purnashakti rules) and logs `ENTITLEMENT_RULE_UPDATED`.
 - `GET /api/beneficiaries` — Scoped authorised `BeneficiaryReference` rows (zero raw or masked Aadhaar digits stored or returned).
 - `POST /api/beneficiaries` — Registers beneficiary via QR-derived `protectedCredentialReference` (per-centre HMAC-SHA256) or manual fallback (`PENDING_APPROVAL` for AWW).
-- `POST /api/beneficiaries/verify-offline-credential` — Matches locally HMAC-hashed `protectedCredentialReference`.
-- `POST /api/distributions` — Atomic single-item or multi-item (`items: [...]`) handover using FEFO and PostgreSQL advisory locks (`pg_advisory_xact_lock`), blocks expired/quarantined batches, enforces `idempotencyKey` and DB-level same-day duplicate ration protection (`409 DUPLICATE_DISTRIBUTION`).
+- `POST /api/beneficiaries/verify-offline-credential` — Matches locally HMAC-hashed `protectedCredentialReference` and returns current monthly `entitlement` eligibility summary.
+- `POST /api/distributions` — Automatically resolves category product & monthly limit (allowing optional `productId`), acquires PostgreSQL advisory locks (`pg_advisory_xact_lock`) for `(beneficiaryReferenceId, distributionMonth)` and `(centreId, productId)`, enforces FEFO and non-expired batches, blocks exhausted/unconfigured/mismatch handovers (with audited `SUPERVISOR`/`CDPO`/`DPO`/`DDO`-only `exceptionOverride`), and enforces `idempotencyKey` and same-day duplicate ration protection (`409 DUPLICATE_DISTRIBUTION`).
 
 ## Alerts, Dashboards & Offline Sync
 - `GET /api/alerts` — Scoped reorder (`WARNING` 4–7d, `CRITICAL` 1–3d, `STOCKOUT` 0d), expiry, pending delivery, and discrepancy alerts.
 - `GET /api/dashboard/centre` | `/api/dashboard/block` | `/api/dashboard/district` | `/api/dashboard/admin-bundle` — Role-enforced dashboards (`AWW` receives `403` on `/api/dashboard/district`).
 - `GET /api/analytics/inventory` | `distribution` | `suppliers` | `nutrition`
-- `POST /api/sync/push` — Idempotent outbox batch processor supporting `CREATE_BENEFICIARY`, `DISTRIBUTION` (single & multi-item), `CONSUMPTION`, `SPOILAGE`, `RECEIVE_DISPATCH`, and `CREATE_STOCK_REQUEST`.
-- `GET /api/sync/pull` — Centre offline snapshot (including `offlineCredentialSalt` and `stockRequests`) for Dexie.js IndexedDB caching.
+- `POST /api/sync/push` — Idempotent outbox batch processor supporting `CREATE_BENEFICIARY`, `DISTRIBUTION` (revalidated against monthly entitlement rules; over-limit/unconfigured ops return `CONFLICT`), `CONSUMPTION`, `SPOILAGE`, `RECEIVE_DISPATCH`, and `CREATE_STOCK_REQUEST`.
+- `GET /api/sync/pull` — Centre offline snapshot (including `currentMonth`, `entitlementRules`, `monthlyDistributions`, `offlineCredentialSalt`, and `stockRequests`) for Dexie.js IndexedDB caching.
 - `GET /health` & `GET /api/health` — PostgreSQL connectivity & client reachability health check.
 
 ---

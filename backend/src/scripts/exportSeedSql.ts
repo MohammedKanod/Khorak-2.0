@@ -35,6 +35,7 @@ async function main() {
     ['Supplier', (await prisma.supplier.findMany()) as unknown as Array<Record<string, unknown>>],
     ['User', (await prisma.user.findMany()) as unknown as Array<Record<string, unknown>>],
     ['Product', (await prisma.product.findMany()) as unknown as Array<Record<string, unknown>>],
+    ['EntitlementRule', (await prisma.entitlementRule.findMany()) as unknown as Array<Record<string, unknown>>],
     ['ProductBatch', (await prisma.productBatch.findMany()) as unknown as Array<Record<string, unknown>>],
     ['BeneficiaryReference', (await prisma.beneficiaryReference.findMany()) as unknown as Array<Record<string, unknown>>],
     ['StockRequest', (await prisma.stockRequest.findMany()) as unknown as Array<Record<string, unknown>>],
@@ -57,7 +58,7 @@ async function main() {
   let sql = `-- KHORAK (ખોરાક) Synthetic Panchmahal Demonstration Seed SQL\n`;
   sql += `-- Paste into Supabase SQL Editor AFTER running the Prisma migration SQL files.\n\n`;
   sql += `BEGIN;\n\n`;
-  sql += `TRUNCATE TABLE "Alert", "Approval", "AuditLog", "SyncOperation", "NutritionAggregate", "Reconciliation", "SpoilageReport", "Distribution", "StockLedgerEvent", "DispatchAppealHistory", "DispatchAppeal", "DiscrepancyCase", "DeliveryReceiptItem", "DeliveryReceipt", "DispatchItem", "Dispatch", "StockRequestHistory", "StockRequest", "ProductBatch", "Product", "BeneficiaryReference", "RefreshToken", "User", "Supplier", "AnganwadiCentre", "Sector", "Block", "District" CASCADE;\n\n`;
+  sql += `TRUNCATE TABLE "Alert", "Approval", "AuditLog", "SyncOperation", "NutritionAggregate", "Reconciliation", "SpoilageReport", "Distribution", "StockLedgerEvent", "DispatchAppealHistory", "DispatchAppeal", "DiscrepancyCase", "DeliveryReceiptItem", "DeliveryReceipt", "DispatchItem", "Dispatch", "StockRequestHistory", "StockRequest", "ProductBatch", "EntitlementRule", "Product", "BeneficiaryReference", "RefreshToken", "User", "Supplier", "AnganwadiCentre", "Sector", "Block", "District" CASCADE;\n\n`;
 
   for (const [table, rows] of tablesInOrder) {
     sql += buildInserts(table, rows);
