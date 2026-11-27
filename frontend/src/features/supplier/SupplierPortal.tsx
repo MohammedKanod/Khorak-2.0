@@ -110,12 +110,6 @@ export function SupplierPortal() {
           },
         ]);
       }
-    } catch (err) {
-      if (!background) setBanner({
-        type: 'error',
-        text: err instanceof Error ? err.message : 'Failed to load supplier portal',
-      });
-      throw err;
     } finally {
       setLoading(false);
     }

@@ -252,12 +252,6 @@ export function AdminPortal() {
           setReconBatchId(firstProd.batches[0]?.batchId || '');
         }
       }
-    } catch (err) {
-      if (!background) setBanner({
-        type: 'error',
-        text: err instanceof Error ? err.message : 'Unable to load administrative dashboard',
-      });
-      throw err;
     } finally {
       setLoading(false);
     }
