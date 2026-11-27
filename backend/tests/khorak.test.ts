@@ -79,20 +79,28 @@ describe('KHORAK Acceptance & Supply Chain Integrity Tests', () => {
     const createRes = await request(app)
       .post('/api/dispatches')
       .set('Authorization', `Bearer ${supplierToken}`)
-      .send({
-        destinationCentreId: vavdiCentreId,
-        notes: 'Test A dispatch 100 packets',
-        items: [
+      .field('destinationCentreId', vavdiCentreId)
+      .field('vehicleNumber', 'GJ-17-AB-1234')
+      .field('notes', 'Test A dispatch 100 packets')
+      .field(
+        'items',
+        JSON.stringify([
           {
             productId: balShaktiId,
             batchNumber: batchNum,
             expiryDate: new Date(Date.now() + 90 * 86400000).toISOString(),
             expectedQuantity: 100,
           },
-        ],
+        ])
+      )
+      .attach('evidence', Buffer.from('%PDF-1.4\n'), {
+        filename: 'challan-test-a.pdf',
+        contentType: 'application/pdf',
       });
 
     expect(createRes.status).toBe(201);
+    expect(createRes.body.data.vehicleNumber).toBe('GJ-17-AB-1234');
+    expect(createRes.body.data.evidenceUrl).toBeTruthy();
     const dispatch = createRes.body.data;
     const item = dispatch.items[0];
 
@@ -717,21 +725,70 @@ describe('KHORAK Acceptance & Supply Chain Integrity Tests', () => {
   });
 
   it('Supplier ownership and strict receipt-line validation enforced', async () => {
+    // Missing dispatch proof rejected
+    const missingProof = await request(app)
+      .post('/api/dispatches')
+      .set('Authorization', `Bearer ${supplierToken}`)
+      .field('destinationCentreId', vavdiCentreId)
+      .field('vehicleNumber', 'GJ-17-AB-1234')
+      .field(
+        'items',
+        JSON.stringify([
+          {
+            productId: balShaktiId,
+            batchNumber: `NOPROOF-${Date.now()}`,
+            expiryDate: new Date(Date.now() + 60 * 86400000).toISOString(),
+            expectedQuantity: 10,
+          },
+        ])
+      );
+    expect(missingProof.status).toBe(400);
+    expect(missingProof.body.error.code).toBe('DISPATCH_PROOF_REQUIRED');
+
+    // Missing vehicle number rejected
+    const missingVehicle = await request(app)
+      .post('/api/dispatches')
+      .set('Authorization', `Bearer ${supplierToken}`)
+      .field('destinationCentreId', vavdiCentreId)
+      .field(
+        'items',
+        JSON.stringify([
+          {
+            productId: balShaktiId,
+            batchNumber: `NOVEH-${Date.now()}`,
+            expiryDate: new Date(Date.now() + 60 * 86400000).toISOString(),
+            expectedQuantity: 10,
+          },
+        ])
+      )
+      .attach('evidence', Buffer.from('%PDF-1.4\n'), {
+        filename: 'challan-noveh.pdf',
+        contentType: 'application/pdf',
+      });
+    expect(missingVehicle.status).toBe(400);
+    expect(missingVehicle.body.error.code).toBe('VALIDATION_ERROR');
+
     // Forging supplierId blocked
     const forged = await request(app)
       .post('/api/dispatches')
       .set('Authorization', `Bearer ${supplierToken}`)
-      .send({
-        supplierId: gscscId,
-        destinationCentreId: vavdiCentreId,
-        items: [
+      .field('supplierId', gscscId)
+      .field('destinationCentreId', vavdiCentreId)
+      .field('vehicleNumber', 'GJ-17-AB-9999')
+      .field(
+        'items',
+        JSON.stringify([
           {
             productId: balShaktiId,
             batchNumber: `FORGE-${Date.now()}`,
             expiryDate: new Date(Date.now() + 60 * 86400000).toISOString(),
             expectedQuantity: 10,
           },
-        ],
+        ])
+      )
+      .attach('evidence', Buffer.from('%PDF-1.4\n'), {
+        filename: 'challan-forge.pdf',
+        contentType: 'application/pdf',
       });
     expect(forged.status).toBe(403);
 
@@ -739,16 +796,22 @@ describe('KHORAK Acceptance & Supply Chain Integrity Tests', () => {
     const goodDispatch = await request(app)
       .post('/api/dispatches')
       .set('Authorization', `Bearer ${supplierToken}`)
-      .send({
-        destinationCentreId: vavdiCentreId,
-        items: [
+      .field('destinationCentreId', vavdiCentreId)
+      .field('vehicleNumber', 'GJ-17-CD-5678')
+      .field(
+        'items',
+        JSON.stringify([
           {
             productId: balShaktiId,
             batchNumber: `VALID-${Date.now()}`,
             expiryDate: new Date(Date.now() + 60 * 86400000).toISOString(),
             expectedQuantity: 20,
           },
-        ],
+        ])
+      )
+      .attach('evidence', Buffer.from('%PDF-1.4\n'), {
+        filename: 'challan-valid.pdf',
+        contentType: 'application/pdf',
       });
     expect(goodDispatch.status).toBe(201);
     const dsp = goodDispatch.body.data;
@@ -906,18 +969,24 @@ describe('KHORAK Acceptance & Supply Chain Integrity Tests', () => {
     const dispatchReq = await request(app)
       .post('/api/dispatches')
       .set('Authorization', `Bearer ${supplierToken}`)
-      .send({
-        destinationCentreId: vavdiCentreId,
-        stockRequestId: reqId,
-        notes: 'Fulfilling approved Toor Dal request',
-        items: [
+      .field('destinationCentreId', vavdiCentreId)
+      .field('stockRequestId', reqId)
+      .field('vehicleNumber', 'GJ-17-EF-2026')
+      .field('notes', 'Fulfilling approved Toor Dal request')
+      .field(
+        'items',
+        JSON.stringify([
           {
             productId: dal.id,
             batchNumber: `REQ-DAL-${Date.now()}`,
             expiryDate: new Date(Date.now() + 120 * 86400000).toISOString(),
             expectedQuantity: 20,
           },
-        ],
+        ])
+      )
+      .attach('evidence', Buffer.from('%PDF-1.4\n'), {
+        filename: 'challan-req.pdf',
+        contentType: 'application/pdf',
       });
     expect(dispatchReq.status).toBe(201);
 

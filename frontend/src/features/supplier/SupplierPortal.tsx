@@ -1,7 +1,7 @@
 import { WorkspaceSidebar } from '../../components/WorkspaceSidebar';
 import { useLiveRefresh } from '../../hooks/useLiveRefresh';
 import { LiveSyncStatus } from '../../components/LiveSyncStatus';
-import React, { useEffect, useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -58,8 +58,10 @@ export function SupplierPortal() {
   const [destinationCentreId, setDestinationCentreId] = useState('');
   const [linkedStockRequestId, setLinkedStockRequestId] = useState<string | null>(null);
   const [dispatchDate, setDispatchDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [vehicleNumber, setVehicleNumber] = useState('');
   const [notes, setNotes] = useState('');
   const [evidenceFile, setEvidenceFile] = useState<File | null>(null);
+  const evidenceInputRef = useRef<HTMLInputElement | null>(null);
   const [items, setItems] = useState<
     Array<{ productId: string; batchNumber: string; expiryDate: string; expectedQuantity: string }>
   >([]);
@@ -120,6 +122,21 @@ export function SupplierPortal() {
 
   async function handleCreateDispatch(e: React.FormEvent) {
     e.preventDefault();
+    const trimmedVehicleNumber = vehicleNumber.trim();
+    if (!evidenceFile) {
+      setBanner({
+        type: 'error',
+        text: 'Dispatch proof (Delivery Evidence / Challan) is required.',
+      });
+      return;
+    }
+    if (trimmedVehicleNumber.length < 3) {
+      setBanner({
+        type: 'error',
+        text: 'Vehicle number is required.',
+      });
+      return;
+    }
     setSubmitting(true);
     setBanner(null);
     try {
@@ -128,8 +145,9 @@ export function SupplierPortal() {
       if (linkedStockRequestId) form.append('stockRequestId', linkedStockRequestId);
       form.append('dispatchDate', new Date(dispatchDate).toISOString());
       form.append('status', 'DISPATCHED');
+      form.append('vehicleNumber', trimmedVehicleNumber);
       if (notes) form.append('notes', notes);
-      if (evidenceFile) form.append('evidence', evidenceFile);
+      form.append('evidence', evidenceFile);
       form.append(
         'items',
         JSON.stringify(
@@ -151,8 +169,10 @@ export function SupplierPortal() {
         type: 'success',
         text: `Dispatch ${res.data.dispatchReference} created and sent to destination AWC.`,
       });
+      setVehicleNumber('');
       setNotes('');
       setEvidenceFile(null);
+      if (evidenceInputRef.current) evidenceInputRef.current.value = '';
       setLinkedStockRequestId(null);
       setTab('history');
       await loadAll();
@@ -569,26 +589,55 @@ export function SupplierPortal() {
 
                   <div className="grid gap-4 md:grid-cols-2">
                     <div>
-                      <label className="mb-1 block text-sm font-semibold">
-                        Delivery Evidence / Challan (Image or PDF)
+                      <label htmlFor="dispatch-proof" className="mb-1 block text-sm font-semibold">
+                        Dispatch Proof / Challan (Image or PDF){' '}
+                        <span className="text-[var(--danger)]" aria-hidden="true">
+                          *
+                        </span>
                       </label>
                       <input
+                        id="dispatch-proof"
+                        ref={evidenceInputRef}
                         type="file"
                         accept="image/*,application/pdf"
                         onChange={(e) => setEvidenceFile(e.target.files?.[0] || null)}
                         className="k-input py-2 text-xs"
+                        required
                       />
                     </div>
                     <div>
-                      <label className="mb-1 block text-sm font-semibold">Consignment Notes</label>
+                      <label htmlFor="dispatch-vehicle-number" className="mb-1 block text-sm font-semibold">
+                        Vehicle Number{' '}
+                        <span className="text-[var(--danger)]" aria-hidden="true">
+                          *
+                        </span>
+                      </label>
                       <input
+                        id="dispatch-vehicle-number"
                         type="text"
-                        value={notes}
-                        onChange={(e) => setNotes(e.target.value)}
-                        placeholder="Vehicle number, seal ID, or remarks"
+                        value={vehicleNumber}
+                        onChange={(e) => setVehicleNumber(e.target.value)}
+                        placeholder="e.g., GJ-17-AB-1234"
                         className="k-input"
+                        required
+                        minLength={3}
+                        maxLength={40}
                       />
                     </div>
+                  </div>
+
+                  <div>
+                    <label htmlFor="dispatch-notes" className="mb-1 block text-sm font-semibold">
+                      Consignment Notes
+                    </label>
+                    <input
+                      id="dispatch-notes"
+                      type="text"
+                      value={notes}
+                      onChange={(e) => setNotes(e.target.value)}
+                      placeholder="Seal ID or remarks (optional)"
+                      className="k-input"
+                    />
                   </div>
 
                   <button type="submit" disabled={submitting} className="k-btn-primary">
@@ -816,6 +865,27 @@ export function SupplierPortal() {
                               <span className="font-mono-num font-bold">{d.dispatchReference}</span>
                               <span className="mx-2 text-[var(--text-muted)]">•</span>
                               <span className="font-semibold">{d.destinationCentre.name}</span>
+                              {d.vehicleNumber && (
+                                <>
+                                  <span className="mx-2 text-[var(--text-muted)]">•</span>
+                                  <span className="font-mono-num text-xs text-[var(--text-secondary)]">
+                                    Vehicle: {d.vehicleNumber}
+                                  </span>
+                                </>
+                              )}
+                              {d.evidenceUrl && (
+                                <>
+                                  <span className="mx-2 text-[var(--text-muted)]">•</span>
+                                  <a
+                                    href={apiUrl(d.evidenceUrl)}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="text-xs font-semibold text-[var(--accent)] underline"
+                                  >
+                                    Dispatch Proof
+                                  </a>
+                                </>
+                              )}
                             </div>
                             <StatusBadge
                               variant={

@@ -243,6 +243,7 @@ export interface DispatchRecord {
   dispatchReference: string;
   status: DispatchStatus;
   dispatchDate: string;
+  vehicleNumber?: string | null;
   evidenceUrl: string | null;
   notes: string | null;
   supplier: { id: string; name: string; code: string };

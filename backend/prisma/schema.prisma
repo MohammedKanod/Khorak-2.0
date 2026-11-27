@@ -388,6 +388,7 @@ model Dispatch {
   dispatchReference   String         @unique
   status              DispatchStatus @default(DISPATCHED)
   dispatchDate        DateTime
+  vehicleNumber       String?
   evidenceUrl         String?
   notes               String?
   createdBy           String         @db.Uuid

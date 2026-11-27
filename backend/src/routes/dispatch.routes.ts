@@ -71,6 +71,7 @@ const createDispatchSchema = z.object({
   stockRequestId: z.string().uuid().optional(),
   dispatchDate: z.string().optional(),
   status: z.enum(['DRAFT', 'DISPATCHED']).default('DISPATCHED'),
+  vehicleNumber: z.string().trim().min(3, 'Vehicle number is required').max(40),
   notes: z.string().max(400).optional(),
   items: z.preprocess((val) => {
     if (typeof val === 'string') {
@@ -162,7 +163,15 @@ dispatchRouter.post(
         throw new AppError(400, 'INVALID_PRODUCT', 'One or more selected products are invalid');
       }
 
-      const evidenceUrl = req.file ? `/uploads/${req.file.filename}` : null;
+      if (!req.file) {
+        throw new AppError(
+          400,
+          'DISPATCH_PROOF_REQUIRED',
+          'Dispatch proof (Delivery Evidence / Challan image or PDF) is required'
+        );
+      }
+
+      const evidenceUrl = `/uploads/${req.file.filename}`;
       const dateCode = new Date().toISOString().slice(0, 10).replace(/-/g, '');
       const suffix = crypto.randomBytes(3).toString('hex').toUpperCase();
       const dispatchReference = `DSP-${centre.code}-${dateCode}-${suffix}`;
@@ -215,6 +224,7 @@ dispatchRouter.post(
             dispatchReference,
             status: parsed.status as DispatchStatus,
             dispatchDate: parsed.dispatchDate ? new Date(parsed.dispatchDate) : new Date(),
+            vehicleNumber: parsed.vehicleNumber,
             evidenceUrl,
             notes: parsed.notes,
             createdBy: req.user!.id,
@@ -264,6 +274,7 @@ dispatchRouter.post(
           afterState: {
             dispatchReference: created.dispatchReference,
             destinationCentreId: created.destinationCentreId,
+            vehicleNumber: created.vehicleNumber,
             status: created.status,
             itemCount: created.items.length,
           },

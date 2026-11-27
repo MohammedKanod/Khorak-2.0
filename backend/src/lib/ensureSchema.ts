@@ -16,6 +16,10 @@ async function isSchemaUpToDate(): Promise<boolean> {
         WHERE table_schema = 'public' AND table_name = 'Distribution' AND column_name = 'distributionMonth'
       )
       AND EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'Dispatch' AND column_name = 'vehicleNumber'
+      )
+      AND EXISTS (
         SELECT 1 FROM information_schema.tables
         WHERE table_schema = 'public' AND table_name = 'DispatchAppeal'
       )
@@ -43,6 +47,7 @@ async function applyIdempotentUpgrade(): Promise<void> {
     `ALTER TABLE "BeneficiaryReference" ADD COLUMN IF NOT EXISTS "idempotencyKey" TEXT`,
     `DO $$ BEGIN ALTER TABLE "BeneficiaryReference" ALTER COLUMN "maskedIdLast4" DROP NOT NULL; EXCEPTION WHEN OTHERS THEN NULL; END $$;`,
     `ALTER TABLE "Dispatch" ADD COLUMN IF NOT EXISTS "stockRequestId" UUID`,
+    `ALTER TABLE "Dispatch" ADD COLUMN IF NOT EXISTS "vehicleNumber" TEXT`,
     `ALTER TABLE "Distribution" ADD COLUMN IF NOT EXISTS "distributionMonth" TEXT`,
     `ALTER TABLE "Distribution" ADD COLUMN IF NOT EXISTS "isExceptionOverride" BOOLEAN NOT NULL DEFAULT false`,
     `ALTER TABLE "Distribution" ADD COLUMN IF NOT EXISTS "exceptionReason" TEXT`,

@@ -1655,6 +1655,7 @@ export function AdminPortal() {
                           <p className="text-xs text-[var(--text-secondary)]">
                             Supplier: {d.supplier.name} • Dispatched:{' '}
                             {new Date(d.dispatchDate).toLocaleDateString()}
+                            {d.vehicleNumber ? ` • Vehicle: ${d.vehicleNumber}` : ''}
                           </p>
                         </div>
                         <StatusBadge
