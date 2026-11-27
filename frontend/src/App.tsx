@@ -9,7 +9,7 @@ import { LoadingSkeleton } from './components/ui';
 
 // Each portal (and its heavy deps such as recharts / jsqr) is split into its own
 // chunk so the login page doesn't have to download all three before it can render.
-const GuardianApp = lazy(() => import('./features/guardian/GuardianApp').then(m => ({ default: m.GuardianApp })));
+const BeneficiaryApp = lazy(() => import('./features/beneficiary/BeneficiaryApp').then(m => ({ default: m.BeneficiaryApp })));
 const HelperApp = lazy(() => import('./features/helper/HelperApp').then(m => ({ default: m.HelperApp })));
 const AwwApp = lazy(() =>
   import('./features/aww/AwwApp').then((m) => ({ default: m.AwwApp }))
@@ -61,7 +61,7 @@ export function App() {
 
   return (
     <Suspense fallback={<PageFallback />}>
-      {user.role === 'GUARDIAN' ? <GuardianApp key={user.id} /> : user.role === 'AWH' ? <HelperApp key={user.id} /> : user.role === 'AWW' ? (
+      {user.role === 'BENEFICIARY' ? <BeneficiaryApp key={user.id} /> : user.role === 'AWH' ? <HelperApp key={user.id} /> : user.role === 'AWW' ? (
         <AwwApp key={user.id} />
       ) : user.role === 'SUPPLIER' ? (
         <SupplierPortal key={user.id} />

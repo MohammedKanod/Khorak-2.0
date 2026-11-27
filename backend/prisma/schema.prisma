@@ -9,7 +9,7 @@ datasource db {
 }
 
 enum Role {
-  GUARDIAN
+  BENEFICIARY
   AWW
   AWH
   SUPPLIER
@@ -232,6 +232,8 @@ model Supplier {
 
 model User {
   guardianRequests GuardianRequest[]
+  beneficiaryId String? @unique @db.Uuid
+  beneficiary BeneficiaryReference? @relation("BeneficiaryPortalAccount", fields: [beneficiaryId], references: [id])
   id           String   @id @default(uuid()) @db.Uuid
   name         String
   nameGu       String?
@@ -321,6 +323,7 @@ model BeneficiaryReference {
   requester     User?           @relation("BeneficiaryRequestedBy", fields: [requestedBy], references: [id])
   reviewer      User?           @relation("BeneficiaryReviewedBy", fields: [reviewedBy], references: [id])
   distributions Distribution[]
+  portalAccount User? @relation("BeneficiaryPortalAccount")
 
   @@unique([centreId, localReference])
   @@index([centreId])

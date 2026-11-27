@@ -82,13 +82,13 @@ export async function requireAuth(
       districtId: user.districtId,
       supplierId: user.supplierId,
     };
-    if (user.role === Role.GUARDIAN && !/^\/api\/(?:auth|guardian)(?:\/|$)/.test(req.originalUrl.split('?')[0])) {
-      throw new AppError(403, 'GUARDIAN_SCOPE_ONLY', 'Guardians can only access their own support requests');
+    if (user.role === Role.BENEFICIARY && !/^\/api\/(?:auth|beneficiary-portal)(?:\/|$)/.test(req.originalUrl.split('?')[0])) {
+      throw new AppError(403, 'BENEFICIARY_SCOPE_ONLY', 'Beneficiaries can only view their own ration records');
     }
     // This applies to every authenticated route, including offline sync uploads.
     const authenticationRoute = req.originalUrl.split('?')[0].startsWith('/api/auth/');
     if (!authenticationRoute && !['GET', 'HEAD', 'OPTIONS'].includes(req.method) &&
-        ([Role.AWH, Role.DPO, Role.TDO, Role.DDO] as Role[]).includes(user.role)) {
+        ([Role.AWH, Role.DPO, Role.TDO, Role.DDO, Role.BENEFICIARY] as Role[]).includes(user.role)) {
       throw new AppError(403, 'READ_ONLY_ROLE', 'Your role has view and export access only');
     }
     if (!authenticationRoute && user.role === Role.AWH &&

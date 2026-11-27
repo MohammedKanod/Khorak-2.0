@@ -30,7 +30,7 @@ const loginRateLimiter = rateLimit({
 const loginSchema = z.object({
   username: z.string().min(2).max(100).trim(),
   password: z.string().min(4).max(128),
-  portal: z.enum(['staff', 'guardian']).optional(),
+  portal: z.enum(['staff', 'beneficiary']).optional(),
 });
 
 const refreshSchema = z.object({
@@ -131,7 +131,7 @@ authRouter.post('/login', loginRateLimiter, async (req, res, next) => {
       throw new AppError(401, 'INVALID_CREDENTIALS', 'Invalid username or password');
     }
 
-    if ((parsed.portal === 'guardian' && user.role !== 'GUARDIAN') || (parsed.portal === 'staff' && user.role === 'GUARDIAN')) {
+    if ((parsed.portal === 'beneficiary' && user.role !== 'BENEFICIARY') || (parsed.portal === 'staff' && user.role === 'BENEFICIARY')) {
       throw new AppError(401, 'WRONG_PORTAL', 'Use the login portal assigned to your account');
     }
     const validPassword = await bcrypt.compare(parsed.password, user.passwordHash);
@@ -267,21 +267,4 @@ authRouter.get('/me', requireAuth, async (req, res, next) => {
   } catch (err) {
     next(err);
   }
-});
-
-
-// Public self-registration always creates a guardian, never a staff account.
-authRouter.post('/guardian-register', loginRateLimiter, async (req, res, next) => {
-  try {
-    const input = z.object({
-      name: z.string().trim().min(2).max(100),
-      username: z.string().trim().toLowerCase().regex(/^[a-z0-9][a-z0-9._-]{3,39}$/),
-      password: z.string().min(10).max(72),
-    }).parse(req.body);
-    const exists = await prisma.user.findUnique({ where: { username: input.username } });
-    if (exists) throw new AppError(409, 'USERNAME_TAKEN', 'This username is already in use. Choose another.');
-    const passwordHash = await bcrypt.hash(input.password, 12);
-    await prisma.user.create({ data: { name: input.name, username: input.username, passwordHash, role: 'GUARDIAN' } });
-    res.status(201).json({ success: true, data: { registered: true } });
-  } catch (err) { next(err); }
 });

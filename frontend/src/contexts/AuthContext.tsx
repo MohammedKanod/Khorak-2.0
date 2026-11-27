@@ -16,7 +16,7 @@ interface AuthContextValue {
   loading: boolean;
   isOnline: boolean;
   refreshConnectivity: () => Promise<boolean>;
-  login: (username: string, password: string, portal?: 'staff' | 'guardian') => Promise<UserProfile>;
+  login: (username: string, password: string, portal?: 'staff' | 'beneficiary') => Promise<UserProfile>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
 }
@@ -122,7 +122,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener('storage', updateSession);
   }, []);
 
-  const login = async (username: string, password: string, portal?: 'staff' | 'guardian'): Promise<UserProfile> => {
+  const login = async (username: string, password: string, portal?: 'staff' | 'beneficiary'): Promise<UserProfile> => {
     const res = await apiRequest<{
       success: boolean;
       data: { accessToken: string; refreshToken: string; user: UserProfile };

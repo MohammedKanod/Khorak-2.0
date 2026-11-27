@@ -1,4 +1,0 @@
-export interface FamilyCentre { id: string; name: string; nameGu: string | null; code: string; location: string; sector: { name: string; block: { name: string } } }
-export interface FamilyRequest { id: string; reference: string; beneficiaryName: string; birthYear: number; category: string; message?: string; status: 'PENDING' | 'NEEDS_INFO' | 'APPROVED' | 'DECLINED'; reviewRemarks?: string; createdAt: string; centre: FamilyCentre; guardian: { name: string } }
-export const categoryLabels: Record<string, string> = { CHILD_6M_3Y: 'Child · 6 months–3 years', CHILD_3Y_6Y: 'Child · 3–6 years', PREGNANT_WOMAN: 'Pregnant woman', LACTATING_MOTHER: 'Lactating mother' };
-export const statusLabels = { PENDING: 'Awaiting centre review', NEEDS_INFO: 'More information needed', APPROVED: 'Visit your centre', DECLINED: 'Not approved' };

@@ -1,4 +1,5 @@
-import { FamilyRequestInbox } from '../guardian/FamilyRequestInbox';
+import { BeneficiaryAccounts } from '../../components/BeneficiaryAccounts';
+import { WorkspaceSidebar } from '../../components/WorkspaceSidebar';
 import { MonthlyReport } from './MonthlyReport';
 import { downloadCsv } from '../../lib/exportCsv';
 import { officerRoles, OfficerRole } from './roleConfig';
@@ -64,7 +65,6 @@ import {
 } from '../../components/ui';
 
 type AdminTab =
-  | 'families'
   | 'hierarchy'
   | 'notes'
   | 'supply'
@@ -517,7 +517,6 @@ export function AdminPortal() {
     { id: 'stockRequests', label: role === 'CDPO' ? 'Requests & approvals' : 'Stock requests', icon: PackagePlus },
     ...(role === 'CDPO' ? [{ id: 'supply' as AdminTab, label: 'Orders & supplier records', icon: Truck }] : []),
     { id: 'notes', label: role === 'SUPERVISOR' ? 'Inspections & flags' : isDistrictLevel ? 'Programme escalations' : 'Observations & flags', icon: FileWarning },
-    ...(canManage ? [{ id: 'families' as AdminTab, label: 'Family requests', icon: UserCheck }] : []),
     ...(canManage ? [{ id: 'beneficiaries' as AdminTab, label: 'Beneficiary approvals', icon: UserCheck }, { id: 'reconciliation' as AdminTab, label: 'Verification & corrections', icon: ClipboardCheck }] : []),
     { id: 'discrepancies', label: 'Delivery exceptions', icon: FileWarning },
     { id: 'alerts', label: 'Supply alerts', icon: AlertTriangle },
@@ -588,7 +587,7 @@ export function AdminPortal() {
   return (
     <div className="officer-shell min-h-screen bg-[var(--bg)] md:flex">
       {/* Sidebar */}
-      <aside className="officer-sidebar border-b border-[var(--border)] bg-[var(--accent)] text-white md:flex md:w-64 md:shrink-0 md:flex-col md:border-b-0 md:border-r">
+      <WorkspaceSidebar title={role}>
         <div className="flex items-center justify-between px-5 py-4">
           <div>
             <div className="font-display text-lg font-bold">{t('appTitle')}</div>
@@ -637,7 +636,7 @@ export function AdminPortal() {
             {t('signOut')}
           </button>
         </div>
-      </aside>
+      </WorkspaceSidebar>
 
       {/* Main */}
       <main className="min-w-0 flex-1 p-4 md:p-8">
@@ -687,7 +686,6 @@ export function AdminPortal() {
             <LoadingSkeleton rows={5} />
           ) : (
             <>
-              {tab === 'families' && <FamilyRequestInbox />}
               {tab === 'hierarchy' && <HierarchyView centres={metrics.centres} role={role} onOpenCentre={centre => { setSearchQuery(centre.code); setBlockFilter(centre.blockId); setTab('centres'); }} />}
               {(tab === 'notes' || tab === 'supply') && <GovernancePanel key={tab} mode={tab} role={role} centres={metrics.centres} notes={notes} suppliers={supplierProfiles} reload={loadDashboard} />}
               {/* OVERVIEW */}
@@ -1321,6 +1319,7 @@ export function AdminPortal() {
               {/* BENEFICIARY APPROVALS (MUKHYA SEVIKA / CDPO) */}
               {tab === 'beneficiaries' && (
                 <div className="k-card p-5">
+                  {role === 'SUPERVISOR' && <BeneficiaryAccounts />}
                   <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
                     <div>
                       <h2 className="text-base font-bold">

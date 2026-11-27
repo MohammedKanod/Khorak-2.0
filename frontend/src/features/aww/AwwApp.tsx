@@ -1,4 +1,4 @@
-import { FamilyRequestInbox } from '../guardian/FamilyRequestInbox';
+import { BeneficiaryAccounts } from '../../components/BeneficiaryAccounts';
 import { useLiveRefresh } from '../../hooks/useLiveRefresh';
 import { LiveSyncStatus } from '../../components/LiveSyncStatus';
 import React, { useEffect, useState } from 'react';
@@ -221,12 +221,8 @@ export function AwwApp() {
         setMonthlyDistributions(cached.monthlyDistributions ?? []);
         setStockRequests(cached.stockRequests ?? []);
         if (cached.offlineCredentialSalt) setCentreSalt(cached.offlineCredentialSalt);
-      } else {
-        if (!background) setBanner({
-          type: 'error',
-          text: err instanceof Error ? err.message : 'Unable to load centre data',
-        });
       }
+      // LiveSyncStatus owns loading errors and clears them after recovery.
       throw err;
     } finally {
       setLoading(false);
@@ -866,18 +862,49 @@ export function AwwApp() {
   }
 
   const pendingOutboxCount = outbox.filter((o) => o.status !== 'synced').length;
-  const totalUsableUnits = inventory.reduce((s, p) => s + p.usableStock, 0);
+  const stockedProducts = inventory.filter(p => p.usableStock > 0).length;
   const criticalOrWarningAlerts = alerts.filter(
     (a) => a.severity === 'CRITICAL' || a.severity === 'WARNING'
   );
 
   const selectedSpoilProduct = inventory.find((p) => p.productId === spoilProductId);
 
+  const statusPanel = <div className="worker-status space-y-3">
+        <LiveSyncStatus {...liveSync} />
+        <SyncStatusPill
+          isOnline={isOnline}
+          pendingCount={pendingOutboxCount}
+          syncing={syncing}
+          onSyncClick={handleSyncNow}
+        />
+
+        {banner && (
+          <div
+            role="status"
+            className={`flex items-start justify-between gap-2 rounded-xl border px-3.5 py-3 text-sm ${
+              banner.type === 'success'
+                ? 'border-emerald-200 bg-[var(--success-subtle)] text-[var(--success)]'
+                : 'border-red-200 bg-[var(--danger-subtle)] text-[var(--danger)]'
+            }`}
+          >
+            <span>{banner.text}</span>
+            <button
+              type="button"
+              onClick={() => setBanner(null)}
+              className="text-xs font-bold underline"
+            >
+              OK
+            </button>
+          </div>
+        )}
+
+  </div>;
+
   return (
-    <div className="min-h-screen bg-[var(--bg)] pb-24">
+    <div className="worker-shell min-h-screen bg-[var(--bg)] pb-24">
       {/* Sticky Top Bar */}
-      <header className="sticky top-0 z-20 border-b border-[var(--border)] bg-[var(--bg-raised)]/95 backdrop-blur">
-        <div className="mx-auto flex max-w-lg items-center justify-between gap-2 px-4 py-3">
+      <header className="worker-header sticky top-0 z-20 border-b border-[var(--border)] bg-[var(--bg-raised)]/95 backdrop-blur">
+        <div className="worker-topbar mx-auto flex items-center justify-between gap-2 px-4 py-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-[var(--accent)] text-xs font-bold text-white">
@@ -918,36 +945,9 @@ export function AwwApp() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-lg space-y-4 px-4 py-4">
-        <LiveSyncStatus {...liveSync} />
-        <SyncStatusPill
-          isOnline={isOnline}
-          pendingCount={pendingOutboxCount}
-          syncing={syncing}
-          onSyncClick={handleSyncNow}
-        />
-
-        {banner && (
-          <div
-            role="status"
-            className={`flex items-start justify-between gap-2 rounded-xl border px-3.5 py-3 text-sm ${
-              banner.type === 'success'
-                ? 'border-emerald-200 bg-[var(--success-subtle)] text-[var(--success)]'
-                : 'border-red-200 bg-[var(--danger-subtle)] text-[var(--danger)]'
-            }`}
-          >
-            <span>{banner.text}</span>
-            <button
-              type="button"
-              onClick={() => setBanner(null)}
-              className="text-xs font-bold underline"
-            >
-              OK
-            </button>
-          </div>
-        )}
-
-        {tab === 'home' && <details className="k-card p-4"><summary className="cursor-pointer font-semibold text-[var(--accent)]">{lang === 'gu' ? 'વાલીઓની સહાય અરજીઓ' : 'Family support requests'}</summary><div className="mt-4"><FamilyRequestInbox /></div></details>}
+      <main className="worker-main space-y-4 px-4 py-4">
+        <div className="worker-page-heading"><p className="form-eyebrow">CENTRE WORKSPACE</p><h1>{tab === 'home' ? (lang === 'gu' ? 'આજનું કેન્દ્ર' : 'Your centre, at a glance') : tab === 'inventory' ? t('navInventory') : tab === 'distribution' ? t('navDistribution') : tab === 'history' ? t('navHistory') : t('navProfile')}</h1><p>{user?.centre?.name} · {user?.centre?.code}</p></div>
+        {tab !== 'home' && statusPanel}
 
         {loading ? (
           <LoadingSkeleton rows={4} />
@@ -955,9 +955,9 @@ export function AwwApp() {
           <>
             {/* TAB 1: HOME */}
             {tab === 'home' && (
-              <div className="space-y-4">
+              <div className="worker-home space-y-4">
                 {/* Greeting Card */}
-                <section className="rounded-2xl bg-[var(--accent)] p-4 text-white">
+                <section className="worker-greeting rounded-2xl bg-[var(--accent)] p-4 text-white">
                   <p className="text-xs text-emerald-100">{t('syntheticBanner')}</p>
                   <h1 className="mt-1 text-xl font-bold">
                     {t('namasteGreeting')}, {lang === 'gu' ? user?.nameGu || user?.name : user?.name}
@@ -967,8 +967,8 @@ export function AwwApp() {
                   </p>
                   <div className="mt-4 grid grid-cols-3 gap-2 rounded-xl bg-white/10 p-3 text-center">
                     <div>
-                      <div className="font-mono-num text-lg font-bold">{totalUsableUnits}</div>
-                      <div className="text-[11px] text-emerald-100">{t('usable')}</div>
+                      <div className="font-mono-num text-lg font-bold">{stockedProducts}</div>
+                      <div className="text-[11px] text-emerald-100">{lang === 'gu' ? 'ઉપલબ્ધ વસ્તુઓ' : 'Products in stock'}</div>
                     </div>
                     <div>
                       <div className="font-mono-num text-lg font-bold">
@@ -987,8 +987,10 @@ export function AwwApp() {
                   </div>
                 </section>
 
+                {statusPanel}
+
                 {/* Primary Action Grid (4–6 large touch targets) */}
-                <section aria-label="Primary actions">
+                <section className="worker-actions" aria-label="Primary actions"><h2 className="mb-3 text-base font-bold">{lang === 'gu' ? 'કેન્દ્રની કામગીરી' : 'Centre actions'}</h2>
                   <div className="grid grid-cols-2 gap-3">
                     <button
                       type="button"
@@ -1643,6 +1645,7 @@ export function AwwApp() {
             {/* TAB 5: PROFILE (AWW) */}
             {tab === 'profile' && (
               <div className="k-card space-y-4 p-5">
+                <BeneficiaryAccounts />
                 <div>
                   <p className="text-xs text-[var(--text-muted)]">{user?.role}</p>
                   <h2 className="text-lg font-bold">
@@ -1676,10 +1679,11 @@ export function AwwApp() {
 
       {/* Bottom Tab Navigation */}
       <nav
-        aria-label="Primary Mobile Navigation"
-        className="fixed inset-x-0 bottom-0 z-30 border-t border-[var(--border)] bg-[var(--bg-raised)]"
+        aria-label="Centre navigation"
+        className="worker-nav fixed inset-x-0 bottom-0 z-30 border-t border-[var(--border)] bg-[var(--bg-raised)]"
         style={{ paddingBottom: 'env(safe-area-inset-bottom, 4px)' }}
       >
+        <div className="worker-nav-brand"><strong>KHORAK</strong><small>Anganwadi workspace</small></div>
         <div className={`mx-auto grid max-w-lg ${isAwh ? 'grid-cols-4' : 'grid-cols-5'}`}>
           {[
             { id: 'home' as const, label: t('navHome'), icon: Home },
@@ -1694,6 +1698,7 @@ export function AwwApp() {
               <button
                 key={item.id}
                 type="button"
+                aria-current={active ? 'page' : undefined}
                 onClick={() => setTab(item.id)}
                 className={`flex min-h-[58px] flex-col items-center justify-center gap-1 text-[11px] font-semibold ${
                   active ? 'text-[var(--accent)]' : 'text-[var(--text-muted)]'

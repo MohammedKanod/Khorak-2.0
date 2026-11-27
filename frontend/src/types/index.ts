@@ -1,5 +1,5 @@
 export type Role =
-  | 'GUARDIAN'
+  | 'BENEFICIARY'
   | 'AWW'
   | 'AWH'
   | 'SUPPLIER'

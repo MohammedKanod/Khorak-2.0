@@ -1,5 +1,5 @@
 import { Role } from '../../types';
-export type OfficerRole = Exclude<Role, 'AWW' | 'AWH' | 'SUPPLIER' | 'GUARDIAN'>;
+export type OfficerRole = Exclude<Role, 'AWW' | 'AWH' | 'SUPPLIER' | 'BENEFICIARY'>;
 export const officerRoles: Record<OfficerRole, { title: string; heading: string; level: string; purpose: string; responsibility: string; readOnly: boolean }> = {
   SUPERVISOR: { title: 'Mukhya Sevika', heading: 'Sector supervision', level: 'Sector', purpose: 'Keep every centre in your sector supported, verified and ready to serve.', responsibility: 'Verify deliveries, record inspections, raise shortages and correct stock through audited reconciliation.', readOnly: false },
   CDPO: { title: 'Child Development Project Officer', heading: 'Block operations', level: 'Block', purpose: 'Coordinate your supervisors, replenish stock and keep nutrition services moving.', responsibility: 'Issue stock orders, manage block supplier records, review exceptions and flag anomalies to the DPO.', readOnly: false },

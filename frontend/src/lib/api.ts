@@ -103,9 +103,10 @@ export async function apiRequest<T>(
   let response: Response;
   const targetUrl = apiUrl(path);
   try {
-    response = await fetch(targetUrl, { cache: 'no-store', ...options, headers, signal: options?.signal ?? AbortSignal.timeout(20000) });
-  } catch {
-    throw new ApiError('Network unavailable — device appears offline', 0, 'NETWORK_OFFLINE', true);
+    response = await fetch(targetUrl, { cache: 'no-store', ...options, headers, signal: options?.signal ?? AbortSignal.timeout(45000) });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'TimeoutError') throw new ApiError('The server is taking longer than expected. Please refresh to try again.', 0, 'REQUEST_TIMEOUT', true);
+    throw new ApiError('Cannot reach the server. Check your connection and try again.', 0, 'NETWORK_OFFLINE', true);
   }
 
   if (response.status === 401 && !options?.skipAuth) {
@@ -113,7 +114,7 @@ export async function apiRequest<T>(
     if (newAccess) {
       headers.Authorization = `Bearer ${newAccess}`;
       try {
-        response = await fetch(targetUrl, { cache: 'no-store', ...options, headers, signal: options?.signal ?? AbortSignal.timeout(20000) });
+        response = await fetch(targetUrl, { cache: 'no-store', ...options, headers, signal: options?.signal ?? AbortSignal.timeout(45000) });
       } catch {
         throw new ApiError('Network unavailable', 0, 'NETWORK_OFFLINE', true);
       }

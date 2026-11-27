@@ -1,3 +1,4 @@
+import { WorkspaceSidebar } from '../../components/WorkspaceSidebar';
 import { useLiveRefresh } from '../../hooks/useLiveRefresh';
 import { LiveSyncStatus } from '../../components/LiveSyncStatus';
 import React, { useEffect, useState } from 'react';
@@ -247,9 +248,9 @@ export function SupplierPortal() {
   ];
 
   return (
-    <div className="min-h-screen bg-[var(--bg)] md:flex">
+    <div className="supplier-shell min-h-screen bg-[var(--bg)] md:flex">
       {/* Sidebar */}
-      <aside className="border-b border-[var(--border)] bg-[var(--accent)] text-white md:flex md:w-64 md:shrink-0 md:flex-col md:border-b-0 md:border-r">
+      <WorkspaceSidebar title="Supplier">
         <div className="flex items-center justify-between px-5 py-4">
           <div>
             <div className="font-display text-lg font-bold">{t('appTitle')}</div>
@@ -272,6 +273,7 @@ export function SupplierPortal() {
               <button
                 key={item.id}
                 type="button"
+                aria-current={active ? 'page' : undefined}
                 onClick={() => setTab(item.id)}
                 className={`flex shrink-0 items-center gap-2.5 rounded-xl px-3.5 py-2.5 text-sm font-semibold transition ${
                   active ? 'bg-white text-[var(--accent)]' : 'text-emerald-100 hover:bg-white/10'
@@ -294,15 +296,15 @@ export function SupplierPortal() {
             {t('signOut')}
           </button>
         </div>
-      </aside>
+      </WorkspaceSidebar>
 
       {/* Main Content */}
-      <main className="flex-1 p-4 md:p-8">
+      <main className="min-w-0 flex-1 p-4 md:p-8">
         <div className="mx-auto max-w-5xl space-y-6">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <span className="rounded-full bg-[var(--saffron-subtle)] px-2.5 py-0.5 text-xs font-bold text-[var(--warning)]">
-                GCMMFL SUPPLIER PORTAL
+                SUPPLY WORKSPACE
               </span>
               <h1 className="mt-1 text-2xl font-bold text-[var(--text-primary)]">
                 {navItems.find((n) => n.id === tab)?.label}
@@ -339,6 +341,7 @@ export function SupplierPortal() {
             <>
               {tab === 'dashboard' && (
                 <div className="space-y-6">
+                  <section className="role-hero"><span className="role-eyebrow">Delivery operations</span><h2>Every delivery, accounted for.</h2><p>Plan consignments, follow deliveries and resolve exceptions across your assigned centres.</p></section>
                   <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
                     <KpiCard label="Total Dispatches" value={dispatches.length} tone="green" />
                     <KpiCard label="In Transit / Pending" value={pendingCount} tone="saffron" />

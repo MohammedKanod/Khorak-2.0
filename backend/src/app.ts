@@ -1,5 +1,5 @@
 import express from 'express';
-import { guardianRouter } from './routes/guardian.routes';
+import { beneficiaryPortalRouter } from './routes/beneficiaryPortal.routes';
 import { governanceRouter } from './routes/governance.routes';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -101,7 +101,7 @@ export function createApp() {
 
   app.use('/api/auth', authRouter);
   app.use('/api/governance', governanceRouter);
-  app.use('/api/guardian', guardianRouter);
+  app.use('/api/beneficiary-portal', beneficiaryPortalRouter);
   app.use('/api/inventory', inventoryRouter);
   app.use('/api/dispatches', dispatchRouter);
   app.use('/api/discrepancies', discrepancyRouter);

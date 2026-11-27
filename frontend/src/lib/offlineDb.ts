@@ -225,7 +225,7 @@ class KhorakOfflineDatabase extends Dexie {
 
 export const offlineDb = new KhorakOfflineDatabase();
 
-export async function checkServerConnectivity(timeoutMs = 3500): Promise<boolean> {
+export async function checkServerConnectivity(timeoutMs = 8000): Promise<boolean> {
   if (typeof navigator !== 'undefined' && navigator.onLine === false) {
     return false;
   }
